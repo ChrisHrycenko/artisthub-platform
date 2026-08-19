@@ -38,6 +38,11 @@ from marshmallow import ValidationError
 from app.extensions import db
 from app.models.release import MusicRelease
 from app.schemas.release import ReleaseCreateSchema, ReleaseUpdateSchema
+from app.services.event_factory import (
+    build_artist_release_created,
+    build_artist_release_updated,
+    build_artist_release_deleted,
+)
 from app.utils.responses import success, error
 
 releases_bp = Blueprint("releases", __name__)
@@ -161,6 +166,7 @@ def create_release():
         release_date=data.get("release_date"),
     )
     db.session.add(release)
+    db.session.add(build_artist_release_created(release))
     db.session.commit()
 
     return success({"release": release.to_dict()}, 201)
@@ -220,6 +226,7 @@ def update_release(release_id: int):
     if data.get("release_date") is not None:
         release.release_date = data["release_date"]
 
+    db.session.add(build_artist_release_updated(release))
     db.session.commit()
     return success({"release": release.to_dict()})
 
@@ -250,6 +257,10 @@ def delete_release(release_id: int):
     if release.artist_id != current_user.id:
         return error("You may only delete your own releases.", 403)
 
+    # Capture IDs before deletion.
+    r_id = release.id
+    r_artist_id = release.artist_id
     db.session.delete(release)
+    db.session.add(build_artist_release_deleted(r_id, r_artist_id))
     db.session.commit()
     return success({"message": "Release deleted."})

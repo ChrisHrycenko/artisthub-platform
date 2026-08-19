@@ -36,6 +36,10 @@ from marshmallow import ValidationError
 from app.extensions import db
 from app.models.post import SocialPost
 from app.schemas.post import PostCreateSchema
+from app.services.event_factory import (
+    build_artist_post_created,
+    build_artist_post_deleted,
+)
 from app.utils.responses import success, error
 
 posts_bp = Blueprint("posts", __name__)
@@ -138,6 +142,7 @@ def create_post():
         image_url=data.get("image_url"),
     )
     db.session.add(post)
+    db.session.add(build_artist_post_created(post))
     db.session.commit()
 
     return success({"post": post.to_dict()}, 201)
@@ -168,6 +173,10 @@ def delete_post(post_id: int):
     if post.artist_id != current_user.id:
         return error("You may only delete your own posts.", 403)
 
+    # Capture IDs before deletion.
+    p_id = post.id
+    p_artist_id = post.artist_id
     db.session.delete(post)
+    db.session.add(build_artist_post_deleted(p_id, p_artist_id))
     db.session.commit()
     return success({"message": "Post deleted."})

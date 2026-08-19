@@ -38,6 +38,11 @@ from marshmallow import ValidationError
 from app.extensions import db
 from app.models.merchandise import MerchProduct
 from app.schemas.merch import MerchCreateSchema, MerchUpdateSchema
+from app.services.event_factory import (
+    build_artist_merch_created,
+    build_artist_merch_updated,
+    build_artist_merch_deleted,
+)
 from app.utils.responses import success, error
 
 merch_bp = Blueprint("merch", __name__)
@@ -147,6 +152,7 @@ def create_merch():
         inventory_quantity=data.get("inventory_quantity"),
     )
     db.session.add(product)
+    db.session.add(build_artist_merch_created(product))
     db.session.commit()
 
     return success({"product": product.to_dict()}, 201)
@@ -203,6 +209,7 @@ def update_merch(product_id: int):
     if "inventory_quantity" in data and data["inventory_quantity"] != -1:
         product.inventory_quantity = data["inventory_quantity"]
 
+    db.session.add(build_artist_merch_updated(product))
     db.session.commit()
     return success({"product": product.to_dict()})
 
@@ -233,6 +240,10 @@ def delete_merch(product_id: int):
     if product.artist_id != current_user.id:
         return error("You may only delete your own products.", 403)
 
+    # Capture IDs before deletion.
+    prod_id = product.id
+    prod_artist_id = product.artist_id
     db.session.delete(product)
+    db.session.add(build_artist_merch_deleted(prod_id, prod_artist_id))
     db.session.commit()
     return success({"message": "Product deleted."})

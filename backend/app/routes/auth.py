@@ -29,6 +29,7 @@ from marshmallow import Schema, fields, validate, ValidationError
 from app.extensions import db, bcrypt
 from app.models.artist import Artist
 from app.models.fan import Fan
+from app.services.event_factory import build_artist_registered
 from app.utils.responses import success, error
 
 auth_bp = Blueprint("auth", __name__)
@@ -112,6 +113,7 @@ def artist_register():
         profile_image_url=data.get("profile_image_url"),
     )
     db.session.add(artist)
+    db.session.add(build_artist_registered(artist))
     db.session.commit()
 
     login_user(artist)

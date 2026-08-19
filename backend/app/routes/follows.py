@@ -34,6 +34,10 @@ from app.extensions import db
 from app.models.artist import Artist
 from app.models.fan import Fan
 from app.models.follow import Follow
+from app.services.event_factory import (
+    build_fan_followed_artist,
+    build_fan_unfollowed_artist,
+)
 from app.utils.responses import success, error
 
 follows_bp = Blueprint("follows", __name__)
@@ -97,6 +101,7 @@ def follow_artist():
     db.session.add(follow)
 
     try:
+        db.session.add(build_fan_followed_artist(follow))
         db.session.commit()
     except IntegrityError:
         # UNIQUE(fan_id, artist_id) violation — already following.
@@ -136,7 +141,11 @@ def unfollow_artist(artist_id: int):
     if follow is None:
         return error("Not following this artist.", 404)
 
+    # Capture IDs before deletion — the Follow row will be removed in this tx.
+    fan_id = follow.fan_id
+    evt_artist_id = follow.artist_id
     db.session.delete(follow)
+    db.session.add(build_fan_unfollowed_artist(fan_id, evt_artist_id))
     db.session.commit()
     return success({"message": "Unfollowed."})
 

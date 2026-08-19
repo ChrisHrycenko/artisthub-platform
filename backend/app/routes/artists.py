@@ -38,6 +38,7 @@ from app.models.merchandise import MerchProduct
 from app.models.post import SocialPost
 from app.models.release import MusicRelease
 from app.schemas.artist import ArtistCreateSchema, ArtistUpdateSchema
+from app.services.event_factory import build_artist_profile_updated
 from app.utils.responses import success, error
 
 artists_bp = Blueprint("artists", __name__)
@@ -220,6 +221,7 @@ def update_artist(artist_id: int):
     if data.get("profile_image_url") is not None:
         artist.profile_image_url = data["profile_image_url"]
 
+    db.session.add(build_artist_profile_updated(artist))
     db.session.commit()
     return success({"artist": artist.to_dict()})
 
