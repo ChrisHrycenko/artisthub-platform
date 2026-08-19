@@ -1,0 +1,86 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "ArtistProfileUpdated",
+  "doc": "Emitted when an artist updates their profile. Source: PUT /api/artists/<id> (artists.py after db.session.commit). Topic: artisthub.identity. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'artist.profile.updated'.",
+      "default": "artist.profile.updated"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime when the profile was updated."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "ArtistProfileUpdatedPayload",
+        "doc": "Business data for the artist.profile.updated event. Contains the full post-update state of the public profile (no password_hash, no email). Source: artist.to_dict().",
+        "fields": [
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Primary key of the Artist row. Source: artist.to_dict()['id']. Also used as the Kafka message key."
+          },
+          {
+            "name": "display_name",
+            "type": "string",
+            "doc": "Artist's display name after update. Source: artist.to_dict()['display_name']."
+          },
+          {
+            "name": "bio",
+            "type": ["null", "string"],
+            "doc": "Artist's bio after update. Source: artist.to_dict()['bio'].",
+            "default": null
+          },
+          {
+            "name": "genre",
+            "type": ["null", "string"],
+            "doc": "Artist's genre after update. Source: artist.to_dict()['genre'].",
+            "default": null
+          },
+          {
+            "name": "location",
+            "type": ["null", "string"],
+            "doc": "Artist's location after update. Source: artist.to_dict()['location'].",
+            "default": null
+          },
+          {
+            "name": "profile_image_url",
+            "type": ["null", "string"],
+            "doc": "Artist's profile image URL after update. Source: artist.to_dict()['profile_image_url'].",
+            "default": null
+          }
+        ]
+      }
+    }
+  ]
+}

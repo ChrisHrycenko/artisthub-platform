@@ -1,0 +1,95 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "ArtistMerchCreated",
+  "doc": "Emitted when an artist creates a merchandise product listing. Source: POST /api/merch (merch.py after db.session.commit). Topic: artisthub.catalog. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'artist.merch.created'.",
+      "default": "artist.merch.created"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime when the product was created."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "ArtistMerchCreatedPayload",
+        "doc": "Business data for the artist.merch.created event.",
+        "fields": [
+          {
+            "name": "product_id",
+            "type": "int",
+            "doc": "Primary key of the new MerchProduct row. Source: product.to_dict()['id']."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Artist who created the product. Source: product.to_dict()['artist_id']. Also used as the Kafka message key."
+          },
+          {
+            "name": "product_name",
+            "type": "string",
+            "doc": "Product display name (1–200 chars). Source: product.to_dict()['product_name']."
+          },
+          {
+            "name": "price",
+            "type": "double",
+            "doc": "Product price in USD as a floating-point value. Source: product.to_dict()['price'] (float cast from NUMERIC(10,2))."
+          },
+          {
+            "name": "description",
+            "type": ["null", "string"],
+            "doc": "Optional product description. Source: product.to_dict()['description'].",
+            "default": null
+          },
+          {
+            "name": "image_url",
+            "type": ["null", "string"],
+            "doc": "Optional external product image URL. Source: product.to_dict()['image_url'].",
+            "default": null
+          },
+          {
+            "name": "inventory_quantity",
+            "type": ["null", "int"],
+            "doc": "NULL = unlimited stock; 0 = out of stock; N > 0 = units available. Source: product.to_dict()['inventory_quantity'].",
+            "default": null
+          },
+          {
+            "name": "created_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime when the row was inserted. Source: product.to_dict()['created_at']."
+          }
+        ]
+      }
+    }
+  ]
+}

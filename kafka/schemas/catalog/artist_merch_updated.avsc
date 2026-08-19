@@ -1,0 +1,90 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "ArtistMerchUpdated",
+  "doc": "Emitted when an artist updates a merchandise product listing. Source: PUT /api/merch/<id> (merch.py after db.session.commit). Topic: artisthub.catalog. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'artist.merch.updated'.",
+      "default": "artist.merch.updated"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime when the update occurred."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "ArtistMerchUpdatedPayload",
+        "doc": "Business data for the artist.merch.updated event. Contains the full post-update state of the product (not a delta).",
+        "fields": [
+          {
+            "name": "product_id",
+            "type": "int",
+            "doc": "Primary key of the updated MerchProduct row."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Artist who owns the product. Also used as the Kafka message key."
+          },
+          {
+            "name": "product_name",
+            "type": "string",
+            "doc": "Product name after update."
+          },
+          {
+            "name": "price",
+            "type": "double",
+            "doc": "Product price after update."
+          },
+          {
+            "name": "description",
+            "type": ["null", "string"],
+            "doc": "Description after update.",
+            "default": null
+          },
+          {
+            "name": "image_url",
+            "type": ["null", "string"],
+            "doc": "Image URL after update.",
+            "default": null
+          },
+          {
+            "name": "inventory_quantity",
+            "type": ["null", "int"],
+            "doc": "Inventory quantity after update. NULL = unlimited.",
+            "default": null
+          }
+        ]
+      }
+    }
+  ]
+}

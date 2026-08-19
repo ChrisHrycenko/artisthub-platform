@@ -1,0 +1,78 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "ArtistPostCreated",
+  "doc": "Emitted when an artist publishes a social post. Source: POST /api/posts (posts.py after db.session.commit). Topic: artisthub.social. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'artist.post.created'.",
+      "default": "artist.post.created"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime when the post was created."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "ArtistPostCreatedPayload",
+        "doc": "Business data for the artist.post.created event.",
+        "fields": [
+          {
+            "name": "post_id",
+            "type": "int",
+            "doc": "Primary key of the new SocialPost row. Source: post.to_dict()['id']."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Artist who published the post. Source: post.to_dict()['artist_id']. Also used as the Kafka message key."
+          },
+          {
+            "name": "body",
+            "type": "string",
+            "doc": "Post text content (max 2000 chars). Source: post.to_dict()['body']."
+          },
+          {
+            "name": "image_url",
+            "type": ["null", "string"],
+            "doc": "Optional external image URL. Source: post.to_dict()['image_url'].",
+            "default": null
+          },
+          {
+            "name": "posted_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime when the post was created. Source: post.to_dict()['created_at']."
+          }
+        ]
+      }
+    }
+  ]
+}

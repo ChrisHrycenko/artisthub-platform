@@ -1,0 +1,67 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "FanUnfollowedArtist",
+  "doc": "Emitted when a fan unfollows an artist. Source: DELETE /api/follows/<artist_id> (follows.py after db.session.commit). Topic: artisthub.social. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'fan.unfollowed.artist'.",
+      "default": "fan.unfollowed.artist"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the unfollow action."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "FanUnfollowedArtistPayload",
+        "doc": "Business data for the fan.unfollowed.artist event.",
+        "fields": [
+          {
+            "name": "fan_id",
+            "type": "int",
+            "doc": "Primary key of the fan who unfollowed."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Primary key of the artist being unfollowed. Also used as the Kafka message key."
+          },
+          {
+            "name": "unfollowed_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime when the unfollow occurred (event occurred_at)."
+          }
+        ]
+      }
+    }
+  ]
+}

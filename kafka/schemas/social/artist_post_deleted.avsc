@@ -1,0 +1,67 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "ArtistPostDeleted",
+  "doc": "Emitted when an artist deletes a social post. Source: DELETE /api/posts/<id> (posts.py after db.session.commit). Topic: artisthub.social. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'artist.post.deleted'.",
+      "default": "artist.post.deleted"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the delete action."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "ArtistPostDeletedPayload",
+        "doc": "Business data for the artist.post.deleted event.",
+        "fields": [
+          {
+            "name": "post_id",
+            "type": "int",
+            "doc": "Primary key of the deleted SocialPost row."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Artist who owned the post. Also used as the Kafka message key."
+          },
+          {
+            "name": "deleted_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime of the delete action (event occurred_at)."
+          }
+        ]
+      }
+    }
+  ]
+}

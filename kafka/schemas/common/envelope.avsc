@@ -1,0 +1,41 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "EventEnvelope",
+  "doc": "Standard metadata envelope included in every ArtistHub domain event. All 12 event schemas embed these fields via the envelope convention (not Avro union inheritance — each event schema repeats these fields for Schema Registry compatibility).",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance. Used by consumers for idempotent processing."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Dot-separated event name, e.g. fan.followed.artist. Consumers on domain topics use this to dispatch to the correct handler."
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version as a string, e.g. '1'. Increment when a backward-incompatible migration creates a new schema generation.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime when the business action occurred, e.g. 2026-08-19T20:33:48Z."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Service identifier of the producing application, e.g. artisthub-api.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID. Allows a single HTTP request to be correlated across Flask logs, Kafka message, and consumer logs.",
+      "default": null
+    }
+  ]
+}

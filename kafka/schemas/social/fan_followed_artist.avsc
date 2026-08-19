@@ -1,0 +1,72 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "FanFollowedArtist",
+  "doc": "Emitted when a fan successfully follows an artist. Source: POST /api/follows (follows.py after db.session.commit). Topic: artisthub.social. Message key: artist_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'fan.followed.artist'.",
+      "default": "fan.followed.artist"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the follow action."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "FanFollowedArtistPayload",
+        "doc": "Business data for the fan.followed.artist event.",
+        "fields": [
+          {
+            "name": "follow_id",
+            "type": "int",
+            "doc": "Primary key of the new Follow row. Source: follow.to_dict()['id']."
+          },
+          {
+            "name": "fan_id",
+            "type": "int",
+            "doc": "Primary key of the fan who followed. Source: follow.to_dict()['fan_id']."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Primary key of the artist being followed. Source: follow.to_dict()['artist_id']. Also used as the Kafka message key."
+          },
+          {
+            "name": "followed_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime when the follow was created. Source: follow.to_dict()['created_at']."
+          }
+        ]
+      }
+    }
+  ]
+}
