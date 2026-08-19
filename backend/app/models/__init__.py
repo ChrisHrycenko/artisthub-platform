@@ -17,5 +17,6 @@ from app.models.follow import Follow                # noqa: F401
 from app.models.outbox import OutboxEvent           # noqa: F401
 from app.models.analytics_state import AnalyticsState   # noqa: F401
 from app.models.processed_event import ProcessedEvent   # noqa: F401
+from app.models.notification import Notification        # noqa: F401
 
 # Phase 3 remaining model (Order) will be added here.
