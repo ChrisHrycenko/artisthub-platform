@@ -61,7 +61,11 @@ Thumbs.db
 # ------------------------------------------------------------------ #
 frontend/
 docker/
+# Exclude kafka/ tooling but keep kafka/schemas/ — the Avro .avsc files
+# are copied into the image at /app/kafka/schemas/ so the relay and
+# consumers can load schemas without a Schema Registry round-trip on boot.
 kafka/
+!kafka/schemas/
 scripts/
 .bob/
 .git/

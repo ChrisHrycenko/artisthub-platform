@@ -156,13 +156,30 @@ _MAGIC_BYTE = b"\x00"
 # Schema path resolution                                               #
 # ------------------------------------------------------------------ #
 
-def _repo_root() -> Path:
+def _schemas_base() -> Path:
     """
-    Return the repository root directory.
+    Return the base directory that contains the ``kafka/schemas/`` tree.
 
-    Resolves upward from this file's location:
-    backend/app/services/avro_utils.py → 3 levels up = repo root.
+    Resolution order (first match wins):
+
+    1. ``KAFKA_SCHEMAS_DIR`` environment variable — set inside Docker to
+       ``/app/kafka/schemas`` so the container-copied schema files are
+       found regardless of where this module sits in the image.
+    2. Path traversal from this file's location — valid for local
+       development where the repo structure is intact:
+       ``backend/app/services/avro_utils.py`` → 3 parents → repo root.
+       The paths in ``_RECORD_NAME_TO_FILE`` (e.g.
+       ``kafka/schemas/social/fan_followed_artist.avsc``) are then
+       appended to that repo root.
+
+    The env-var path is the *schemas* directory itself, so it is returned
+    directly and the ``kafka/schemas/`` prefix in each ``_RECORD_NAME_TO_FILE``
+    value is stripped when constructing the final path (see ``_schema_path``).
     """
+    env_dir = os.environ.get("KAFKA_SCHEMAS_DIR", "").strip()
+    if env_dir:
+        return Path(env_dir)
+    # Local dev: parents[3] is the repo root.
     return Path(__file__).resolve().parents[3]
 
 
@@ -174,7 +191,16 @@ def _schema_path(record_name: str) -> Path:
             f"No schema file registered for record '{record_name}'. "
             f"Known records: {sorted(_RECORD_NAME_TO_FILE)}"
         )
-    return _repo_root() / rel
+    base = _schemas_base()
+    env_dir = os.environ.get("KAFKA_SCHEMAS_DIR", "").strip()
+    if env_dir:
+        # env_dir IS the kafka/schemas/ directory.
+        # _RECORD_NAME_TO_FILE paths start with "kafka/schemas/"; strip that
+        # prefix so the final path is: /app/kafka/schemas/<subdir>/<file>.avsc
+        prefix = "kafka/schemas/"
+        rel_stripped = rel[len(prefix):] if rel.startswith(prefix) else rel
+        return base / rel_stripped
+    return base / rel
 
 
 # ------------------------------------------------------------------ #

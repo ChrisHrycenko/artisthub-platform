@@ -195,6 +195,15 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+    # Override the Dockerfile's curl-based HEALTHCHECK — this container
+    # runs a long-lived Python process (run_relay.py), not gunicorn.
+    # There is no HTTP server on port 5000 here; use pgrep instead.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f run_relay.py > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # ------------------------------------------------------------------ #
@@ -223,6 +232,14 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+    # Override the Dockerfile's curl-based HEALTHCHECK — this container
+    # runs a long-lived Python process, not gunicorn. Use pgrep.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f run_analytics_consumer.py > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # ------------------------------------------------------------------ #
@@ -251,6 +268,14 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+    # Override the Dockerfile's curl-based HEALTHCHECK — this container
+    # runs a long-lived Python process, not gunicorn. Use pgrep.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f run_notification_consumer.py > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

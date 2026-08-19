@@ -66,6 +66,15 @@ COPY --from=deps /usr/local/bin/gunicorn /usr/local/bin/gunicorn
 # .dockerignore keeps venv/, __pycache__, tests/, .env, and *.db out.
 COPY backend/ .
 
+# Copy Avro schemas so the relay and consumers can load them without a
+# Schema Registry round-trip on startup. .dockerignore excludes kafka/
+# in general but explicitly allows kafka/schemas/ via a negation rule.
+COPY kafka/schemas/ /app/kafka/schemas/
+
+# Tell avro_utils.py where to find the schema files inside the container.
+# This overrides the local-dev path-traversal logic.
+ENV KAFKA_SCHEMAS_DIR=/app/kafka/schemas
+
 # Ensure the instance directory exists and is owned by the app user.
 # The SQLite DB file is written here at runtime (via a named volume).
 RUN mkdir -p /app/instance && chown -R artisthub:artisthub /app/instance

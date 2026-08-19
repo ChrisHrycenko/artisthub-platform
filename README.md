@@ -630,10 +630,10 @@ docker compose version   # Docker Compose version v2.x
 
 | File | Purpose |
 |---|---|
-| `docker/Dockerfile` | Multi-stage build — deps layer cached separately from source |
+| `docker/Dockerfile` | Multi-stage build — deps layer cached separately from source; copies `kafka/schemas/` for Avro serialization |
 | `docker/docker-compose.yml` | Full stack: `backend` (gunicorn, port 5000 internal) + `web` (nginx, port 8080) |
 | `docker/nginx.conf` | Serves `frontend/` static files; reverse-proxies `/api/*` to Flask |
-| `.dockerignore` | Excludes `.env`, `venv/`, `__pycache__`, `tests/`, `*.db`, `kafka/`, `frontend/` from the build context |
+| `.dockerignore` | Excludes `.env`, `venv/`, `__pycache__`, `tests/`, `*.db`; excludes `kafka/` tooling but **allows `kafka/schemas/`** via negation rule |
 
 ### Image security properties
 
@@ -642,7 +642,8 @@ docker compose version   # Docker Compose version v2.x
 - **Minimal surface** — only `curl` added to `python:3.11-slim`; no shell tooling, no package manager
 - **Safe layer caching** — `requirements.txt` is copied before source; pip only re-runs on dependency changes
 - **Targeted binary copy** — only `gunicorn` is copied from the deps stage, not the entire `/usr/local/bin`
-- **Lean build context** — `kafka/`, `frontend/`, `docker/`, `scripts/` are all excluded from the build context by `.dockerignore`
+- **Lean build context** — `kafka/` tooling, `frontend/`, `docker/`, `scripts/` are all excluded; `kafka/schemas/` is explicitly allowed to support Avro serialization
+- **`KAFKA_SCHEMAS_DIR=/app/kafka/schemas`** — baked into the image via `ENV`; tells `avro_utils.py` where to find `.avsc` files so path-traversal from the module file (which would resolve incorrectly inside the container) is bypassed
 
 ---
 
