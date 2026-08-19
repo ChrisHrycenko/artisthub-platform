@@ -67,10 +67,19 @@ Dead-letter topic: artisthub.deadletter
   Payload includes: original_topic, original_partition, original_offset,
   event_id (if available), failure_reason, original_payload.
 
-Serialisation
--------------
-Phase 7E processes Phase 7C JSON payloads.
-Avro/Schema Registry enforcement is Phase 7F.
+Serialisation (Phase 7F)
+------------------------
+Messages from the relay are Confluent Avro wire format:
+  [0x00][schema_id: 4 bytes big-endian][Avro binary payload]
+
+parse_message() detects the format automatically:
+  - If the first byte is 0x00 (Confluent magic byte):
+      → Decode via avro_utils.decode() (Schema Registry required).
+  - Otherwise: attempt JSON decode (unit tests, legacy tools).
+
+NOTE: When Avro deserialization fails before the payload is readable
+(e.g. unknown schema_id, corrupt binary), event_id cannot be extracted
+for the dead-letter envelope. This is a known limitation.
 
 Configuration (environment variables)
 --------------------------------------
@@ -185,15 +194,40 @@ def parse_message(raw_value: bytes) -> dict:
     """
     Deserialise a raw Kafka message value to a Python dict.
 
-    Raises ValueError on non-JSON or missing required envelope fields.
-    This function is identical in contract to the analytics consumer's
-    parse_message; it is re-implemented here to keep consumers fully
-    independent (no shared module coupling).
+    Phase 7F: Supports both Confluent Avro wire format and plain JSON.
+
+    Detection logic:
+      - If raw_value[0] == 0x00 (Confluent magic byte):
+          → Decode via avro_utils.decode() (Schema Registry required).
+      - Otherwise: attempt UTF-8 JSON decode (unit tests, legacy tools).
+
+    Both paths produce a dict with at least: event_id, event_type, payload.
+
+    Raises ValueError on deserialization failure or missing envelope fields.
+
+    NOTE: This function is independent of the analytics consumer's
+    parse_message to keep consumers fully decoupled (no shared module).
+    Both implement the same contract and now share the same format
+    detection logic.
     """
-    try:
-        event = json.loads(raw_value.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(f"JSON decode error: {exc}") from exc
+    if not raw_value:
+        raise ValueError("Empty message value")
+
+    # ---- Confluent Avro wire format (magic byte = 0x00) ---------------
+    if raw_value[0:1] == b"\x00":
+        try:
+            from app.services.avro_utils import decode as avro_decode
+            event = avro_decode(raw_value)
+        except Exception as exc:
+            raise ValueError(
+                f"Avro deserialization error: {exc}"
+            ) from exc
+    else:
+        # ---- Plain JSON (unit tests / legacy) -------------------------
+        try:
+            event = json.loads(raw_value.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"JSON decode error: {exc}") from exc
 
     for field in ("event_id", "event_type", "payload"):
         if field not in event:

@@ -705,22 +705,23 @@ class TestOutboxRelay:
         mock_producer = MagicMock()
         count = poll_and_publish(app, mock_producer)
         assert count == 0
-        mock_producer.produce.assert_not_called()
+        mock_producer.produce_avro.assert_not_called()
 
     def test_pending_row_is_published(self, app, db_):
         """
-        poll_and_publish calls producer.produce() for each pending row.
+        Phase 7F: poll_and_publish calls producer.produce_avro() for each
+        pending row (not produce()).
         """
         rows = self._seed_pending(db_, 2)
         mock_producer = MagicMock()
 
         count = poll_and_publish(app, mock_producer, batch_size=10)
         assert count == 2
-        assert mock_producer.produce.call_count == 2
+        assert mock_producer.produce_avro.call_count == 2
         mock_producer.flush.assert_called_once()
 
-        # Verify produce was called with correct topic and key.
-        calls = mock_producer.produce.call_args_list
+        # Verify produce_avro was called with correct topic and key.
+        calls = mock_producer.produce_avro.call_args_list
         topics = {c.kwargs["topic"] for c in calls}
         assert topics == {"artisthub.social"}
 
@@ -728,11 +729,14 @@ class TestOutboxRelay:
         """
         When the delivery callback reports success, published_at is set
         and publish_attempts is incremented.
+        Phase 7F: relay calls produce_avro(); on_delivery still works.
         """
         rows = self._seed_pending(db_, 1)
         row_id = rows[0].id
 
-        def mock_produce(topic, key, value, on_delivery):
+        def mock_produce_avro(
+            topic, event_type, key, record, on_delivery
+        ):
             # Simulate successful broker acknowledgement.
             msg = MagicMock()
             msg.topic.return_value = topic
@@ -741,7 +745,7 @@ class TestOutboxRelay:
             on_delivery(None, msg)  # err=None → success
 
         mock_producer = MagicMock()
-        mock_producer.produce.side_effect = mock_produce
+        mock_producer.produce_avro.side_effect = mock_produce_avro
 
         poll_and_publish(app, mock_producer, batch_size=10)
 
@@ -758,19 +762,22 @@ class TestOutboxRelay:
         When the delivery callback reports an error, last_error is set,
         published_at remains NULL, and publish_attempts is incremented.
         The row is NOT deleted — it will be retried.
+        Phase 7F: relay calls produce_avro().
         """
         rows = self._seed_pending(db_, 1)
         row_id = rows[0].id
 
-        def mock_produce_fail(topic, key, value, on_delivery):
+        def mock_produce_avro_fail(
+            topic, event_type, key, record, on_delivery
+        ):
             msg = MagicMock()
             msg.topic.return_value = topic
             msg.partition.return_value = 0
             msg.offset.return_value = -1
-            on_delivery(Exception("broker timeout"), msg)  # err → failure
+            on_delivery(Exception("broker timeout"), msg)
 
         mock_producer = MagicMock()
-        mock_producer.produce.side_effect = mock_produce_fail
+        mock_producer.produce_avro.side_effect = mock_produce_avro_fail
 
         poll_and_publish(app, mock_producer, batch_size=10)
 
@@ -811,28 +818,27 @@ class TestOutboxRelay:
 
         # Only the pending row should be processed.
         assert count == 1
-        assert mock_producer.produce.call_count == 1
-        produce_call = mock_producer.produce.call_args
+        assert mock_producer.produce_avro.call_count == 1
+        produce_call = mock_producer.produce_avro.call_args
         assert produce_call.kwargs["key"] == "2"
 
     def test_relay_restart_preserves_pending_events(self, app, db_):
         """
         Pending rows survive between relay cycles. A restart does not
         lose unprocessed events.
+        Phase 7F: produce_avro raises to simulate crash.
         """
         rows = self._seed_pending(db_, 3)
 
-        # First cycle: relay crashes before flush completes (simulate by
-        # not calling produce — just assert the rows are still there).
+        # First cycle: relay crashes before flush completes.
         mock_producer = MagicMock()
-        mock_producer.produce.side_effect = Exception("crash")
+        mock_producer.produce_avro.side_effect = Exception("crash")
 
         poll_and_publish(app, mock_producer, batch_size=10)
 
         # All 3 rows still have published_at IS NULL — none were lost.
         with app.app_context():
             still_pending = _pending_outbox(db_.session)
-            # Filter to our seeded rows
             seeded_ids = {r.id for r in rows}
             still_seeded = [r for r in still_pending if r.id in seeded_ids]
             assert len(still_seeded) == 3
@@ -843,12 +849,15 @@ class TestOutboxRelay:
         """
         Running the relay twice does not re-publish already-published rows
         or corrupt their published_at timestamps.
+        Phase 7F: uses produce_avro.
         """
         rows = self._seed_pending(db_, 1)
         row_id = rows[0].id
         first_published_at = None
 
-        def mock_produce_ok(topic, key, value, on_delivery):
+        def mock_produce_avro_ok(
+            topic, event_type, key, record, on_delivery
+        ):
             msg = MagicMock()
             msg.topic.return_value = topic
             msg.partition.return_value = 0
@@ -856,7 +865,7 @@ class TestOutboxRelay:
             on_delivery(None, msg)
 
         mock_producer = MagicMock()
-        mock_producer.produce.side_effect = mock_produce_ok
+        mock_producer.produce_avro.side_effect = mock_produce_avro_ok
 
         # First cycle — publishes the row.
         poll_and_publish(app, mock_producer, batch_size=10)
@@ -870,7 +879,7 @@ class TestOutboxRelay:
         mock_producer.reset_mock()
         count = poll_and_publish(app, mock_producer, batch_size=10)
         assert count == 0
-        mock_producer.produce.assert_not_called()
+        mock_producer.produce_avro.assert_not_called()
 
         with app.app_context():
             row = db_.session.get(OutboxEvent, row_id)
@@ -884,24 +893,33 @@ class TestOutboxRelay:
 
         count = poll_and_publish(app, mock_producer, batch_size=2)
         assert count == 2
-        assert mock_producer.produce.call_count == 2
+        assert mock_producer.produce_avro.call_count == 2
 
     def test_correct_payload_is_sent_to_kafka(self, app, db_):
         """
-        The value sent to producer.produce() is exactly the payload
-        stored in the outbox row.
+        Phase 7F: produce_avro is called with the decoded record dict
+        (not the raw JSON string).
         """
-        payload_str = json.dumps({
-            "event_id": str(uuid.uuid4()),
+        eid = str(uuid.uuid4())
+        record_dict = {
+            "event_id": eid,
             "event_type": "fan.followed.artist",
-            "payload": {"fan_id": 1, "artist_id": 2},
-        })
+            "event_version": "1",
+            "occurred_at": "2026-08-19T12:00:00Z",
+            "producer": "artisthub-api",
+            "correlation_id": None,
+            "payload": {
+                "follow_id": 1, "fan_id": 2, "artist_id": 3,
+                "followed_at": "2026-08-19T12:00:00Z",
+            },
+        }
+        payload_str = json.dumps(record_dict)
         row = OutboxEvent(
-            event_id=str(uuid.uuid4()),
+            event_id=eid,
             event_type="fan.followed.artist",
             event_version="1",
             topic="artisthub.social",
-            message_key="2",
+            message_key="3",
             payload=payload_str,
         )
         db_.session.add(row)
@@ -910,7 +928,8 @@ class TestOutboxRelay:
         mock_producer = MagicMock()
         poll_and_publish(app, mock_producer, batch_size=10)
 
-        produce_call = mock_producer.produce.call_args
-        assert produce_call.kwargs["value"] == payload_str
+        produce_call = mock_producer.produce_avro.call_args
+        assert produce_call.kwargs["event_type"] == "fan.followed.artist"
         assert produce_call.kwargs["topic"] == "artisthub.social"
-        assert produce_call.kwargs["key"] == "2"
+        assert produce_call.kwargs["key"] == "3"
+        assert produce_call.kwargs["record"]["event_id"] == eid

@@ -3,25 +3,40 @@ services/kafka_producer.py
 
 Centralised Kafka producer service for ArtistHub.
 
+Phase 7F: Messages are now serialized using Confluent Avro wire format
+governed by Schema Registry. The 5-byte Confluent header (magic byte +
+schema_id) is prepended by avro_utils.encode() before produce() is called.
+
 This module is used exclusively by the outbox relay process
 (app/services/outbox_relay.py). Routes NEVER call this directly —
 they write to the outbox table and let the relay handle publishing.
 
 Configuration (all from environment variables — no secrets hardcoded):
-    KAFKA_BOOTSTRAP_SERVERS   Comma-separated broker list.
-                              Default: localhost:9092
-    KAFKA_SECURITY_PROTOCOL   PLAINTEXT (default) or SASL_SSL
-    KAFKA_SASL_MECHANISM      PLAIN (only used when protocol=SASL_SSL)
-    CONFLUENT_API_KEY         SASL username (Confluent Cloud only)
-    CONFLUENT_API_SECRET      SASL password (Confluent Cloud only)
+    KAFKA_BOOTSTRAP_SERVERS    Comma-separated broker list.
+                               Default: localhost:9092
+    KAFKA_SECURITY_PROTOCOL    PLAINTEXT (default) or SASL_SSL
+    KAFKA_SASL_MECHANISM       PLAIN (only used when protocol=SASL_SSL)
+    CONFLUENT_API_KEY          SASL username (Confluent Cloud only)
+    CONFLUENT_API_SECRET       SASL password (Confluent Cloud only)
+    SCHEMA_REGISTRY_URL        Schema Registry base URL.
+                               Default: http://localhost:8081
+    SCHEMA_REGISTRY_API_KEY    Schema Registry basic-auth username
+                               (Confluent Cloud; leave blank locally)
+    SCHEMA_REGISTRY_API_SECRET Schema Registry basic-auth password
 
-Serialisation (Phase 7C):
-    Messages are published as UTF-8-encoded JSON strings.
-    The message value is the full event JSON stored in OutboxEvent.payload.
-    Live Avro serialisation via Confluent Schema Registry will be
-    activated in Phase 7F. The JSON wire format is structurally compatible
-    with the Phase 7B Avro schema field layout so that no data migration
-    is required when Phase 7F is activated.
+Serialisation (Phase 7F):
+    The relay calls produce_avro() which:
+      1. Looks up / registers the Avro schema for the event_type in
+         Schema Registry (RecordNameStrategy).
+      2. Serializes the full event dict to Confluent wire format using
+         avro_utils.encode().
+      3. Passes the resulting bytes to the underlying confluent_kafka.Producer.
+
+    The JSON outbox payload is never written directly to Kafka in Phase 7F.
+
+Subject naming:
+    RecordNameStrategy — subject = "io.artisthub.events.<RecordName>"
+    See avro_utils.py for the full event_type → subject mapping.
 
 Producer settings:
     enable.idempotence=true  — exactly-once delivery within a session
@@ -64,7 +79,6 @@ def _build_config() -> dict:
     config: dict = {
         "bootstrap.servers": bootstrap,
         # Idempotent producer — exactly-once within a session.
-        # confluent-kafka requires retries > 0 and acks=all with idempotence.
         "enable.idempotence": True,
         "acks": "all",
         "retries": 5,
@@ -89,19 +103,25 @@ def _build_config() -> dict:
 
 class KafkaProducerService:
     """
-    Thin wrapper around the confluent-kafka Producer.
+    Avro-aware Kafka producer service for ArtistHub.
 
     The relay process creates one instance and reuses it for the lifetime
     of the process. The producer is not thread-safe; the relay runs in a
     single thread.
 
+    Phase 7F changes:
+      - ``produce_avro()`` is the primary method for Avro-serialized events.
+      - ``produce()`` is retained for backward-compatibility in tests and
+        dead-letter publishing; it writes raw bytes/string values directly.
+
     Usage:
         svc = KafkaProducerService()
-        svc.produce(
+        svc.produce_avro(
             topic="artisthub.social",
+            event_type="fan.followed.artist",
             key="42",
-            value='{"event_type": "fan.followed.artist", ...}',
-            on_delivery=my_callback,
+            record={...},          # full event dict
+            on_delivery=callback,
         )
         svc.flush()
     """
@@ -115,9 +135,79 @@ class KafkaProducerService:
             )
         self._producer: Producer = Producer(_build_config())
         logger.info(
-            "KafkaProducerService initialised — bootstrap=%s",
+            "KafkaProducerService initialised | bootstrap=%s sr_url=%s",
             os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+            os.environ.get("SCHEMA_REGISTRY_URL", "http://localhost:8081"),
         )
+
+    def produce_avro(
+        self,
+        topic: str,
+        event_type: str,
+        key: str,
+        record: dict,
+        on_delivery: Optional[Callable] = None,
+    ) -> None:
+        """
+        Serialize record to Confluent Avro wire format and enqueue for
+        delivery.
+
+        Steps:
+          1. Determine the Avro record name from event_type.
+          2. Register / retrieve the schema_id from Schema Registry
+             (cached per process after first call per event type).
+          3. Serialize record with avro_utils.encode() → Confluent bytes.
+          4. Enqueue via the underlying confluent_kafka.Producer.
+
+        Args:
+            topic:       Kafka topic name.
+            event_type:  ArtistHub event type (selects the Avro schema).
+            key:         Message key (string; encoded to UTF-8 bytes).
+            record:      Full event dict (envelope + payload).
+            on_delivery: Optional callback invoked on ack or error.
+
+        Raises:
+            ValueError:       if event_type is not one of the 12 known types.
+            KafkaException:   on producer transport errors.
+            requests.HTTPError: on Schema Registry communication failure.
+            fastavro.write.ValidationError: if record violates the schema.
+        """
+        from app.services.avro_utils import (
+            get_or_register_schema_id,
+            encode,
+        )
+
+        record_name = None
+        try:
+            from app.services.avro_utils import record_name_for_event_type
+            record_name = record_name_for_event_type(event_type)
+            schema_id = get_or_register_schema_id(record_name)
+            avro_bytes = encode(event_type, record, schema_id)
+        except ValueError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "Avro serialization error | event_type=%s record=%s err=%s",
+                event_type, record_name, exc,
+            )
+            raise
+
+        try:
+            self._producer.produce(
+                topic=topic,
+                key=key.encode("utf-8"),
+                value=avro_bytes,
+                on_delivery=on_delivery,
+            )
+            # Poll to serve delivery callbacks for already-sent messages.
+            self._producer.poll(0)
+        except KafkaException as exc:
+            logger.error(
+                "KafkaProducerService.produce_avro error | "
+                "topic=%s key=%s event_type=%s err=%s",
+                topic, key, event_type, exc,
+            )
+            raise
 
     def produce(
         self,
@@ -127,30 +217,30 @@ class KafkaProducerService:
         on_delivery: Optional[Callable] = None,
     ) -> None:
         """
-        Enqueue a message for delivery to Kafka.
+        Enqueue a raw string/bytes message for delivery.
 
-        The message is not guaranteed delivered until flush() is called or
-        the internal buffer is full. The on_delivery callback receives
-        (err, msg) after acknowledgement or failure.
+        Retained for dead-letter publishing (which uses plain JSON, not Avro)
+        and for test injection. New relay code should use produce_avro().
 
         Args:
             topic:       Kafka topic name.
             key:         Message key (string; encoded to UTF-8 bytes).
-            value:       Message value (JSON string; encoded to UTF-8 bytes).
-            on_delivery: Optional callback invoked on ack or error.
+            value:       Message value (string or bytes).
+            on_delivery: Optional delivery callback.
         """
+        raw = value.encode("utf-8") if isinstance(value, str) else value
         try:
             self._producer.produce(
                 topic=topic,
-                key=key.encode("utf-8"),
-                value=value.encode("utf-8"),
+                key=key.encode("utf-8") if isinstance(key, str) else key,
+                value=raw,
                 on_delivery=on_delivery,
             )
-            # Poll to serve delivery callbacks for already-sent messages.
             self._producer.poll(0)
         except KafkaException as exc:
             logger.error(
-                "KafkaProducerService.produce error | topic=%s key=%s err=%s",
+                "KafkaProducerService.produce error | "
+                "topic=%s key=%s err=%s",
                 topic, key, exc,
             )
             raise

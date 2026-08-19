@@ -837,6 +837,130 @@ docker-compose \
 
 ---
 
+## 12b. Avro Serialization and Schema Registry (Phase 7F)
+
+ArtistHub now enforces event contracts at runtime. Every message published to Kafka is serialized using **Apache Avro** governed by **Confluent Schema Registry**. Consumers that receive an incompatible or malformed message cannot silently mishandle it — deserialization fails loudly before business logic is applied.
+
+### Why governed contracts matter
+
+Without a schema registry, any producer can publish structurally invalid JSON and consumers will silently skip or crash. With Avro + Schema Registry:
+- **Producers** are rejected at publish time if the event does not match the registered schema.
+- **Consumers** receive a typed record — missing required fields are a serialization error, not a runtime `KeyError`.
+- **Schema evolution** is controlled: BACKWARD-compatible changes (adding optional fields with defaults) pass; breaking changes (removing required fields, changing types) are rejected by the registry.
+
+### Confluent wire format
+
+Every Kafka message value is prefixed with a 5-byte header:
+
+```
+Byte 0       : 0x00  (Confluent magic byte)
+Bytes 1–4    : schema_id (big-endian int32, assigned by Schema Registry)
+Bytes 5+     : Avro binary payload (schemaless — schema resolved by id)
+```
+
+This format is read natively by all Confluent clients and the Redpanda embedded Schema Registry.
+
+### Subject naming — RecordNameStrategy
+
+ArtistHub uses **RecordNameStrategy**, where the Schema Registry subject is derived from the Avro record name — not from the topic name:
+
+```
+subject = "<namespace>.<RecordName>"
+```
+
+All 12 Phase 7B schemas share the namespace `io.artisthub.events`:
+
+| Event type | Record name | Subject |
+|---|---|---|
+| `fan.followed.artist` | `FanFollowedArtist` | `io.artisthub.events.FanFollowedArtist` |
+| `fan.unfollowed.artist` | `FanUnfollowedArtist` | `io.artisthub.events.FanUnfollowedArtist` |
+| `artist.post.created` | `ArtistPostCreated` | `io.artisthub.events.ArtistPostCreated` |
+| `artist.post.deleted` | `ArtistPostDeleted` | `io.artisthub.events.ArtistPostDeleted` |
+| `artist.release.created` | `ArtistReleaseCreated` | `io.artisthub.events.ArtistReleaseCreated` |
+| `artist.release.updated` | `ArtistReleaseUpdated` | `io.artisthub.events.ArtistReleaseUpdated` |
+| `artist.release.deleted` | `ArtistReleaseDeleted` | `io.artisthub.events.ArtistReleaseDeleted` |
+| `artist.merch.created` | `ArtistMerchCreated` | `io.artisthub.events.ArtistMerchCreated` |
+| `artist.merch.updated` | `ArtistMerchUpdated` | `io.artisthub.events.ArtistMerchUpdated` |
+| `artist.merch.deleted` | `ArtistMerchDeleted` | `io.artisthub.events.ArtistMerchDeleted` |
+| `artist.registered` | `ArtistRegistered` | `io.artisthub.events.ArtistRegistered` |
+| `artist.profile.updated` | `ArtistProfileUpdated` | `io.artisthub.events.ArtistProfileUpdated` |
+
+RecordNameStrategy was chosen over TopicNameStrategy because multiple event types share the same topic (e.g. `artisthub.catalog` carries releases, merch, and deletions). One subject per record name avoids subject collisions.
+
+### BACKWARD compatibility mode
+
+All 12 schemas are registered with **BACKWARD** compatibility:
+- New schema versions may **add** fields only if they have a default value.
+- New schema versions may **never** remove required fields or change field types incompatibly.
+- Old consumers (unaware of the new field) still deserialize correctly because the new field defaults are applied by the reader schema.
+
+**Verified schema evolution test (Phase 7F):**
+
+| Change | Result |
+|---|---|
+| Add `source_device` (nullable, default null) to `FanFollowedArtist` | ✅ BACKWARD-compatible — old consumers read v2 data, new field defaults to null |
+| Remove required field `follow_id` from `FanFollowedArtist` | ❌ REJECTED — old consumers cannot reconstruct missing field |
+
+Both tests are exercised in `backend/tests/test_avro_utils.py::TestSchemaCompatibility`.
+
+### Schema Registry configuration
+
+| Environment variable | Description |
+|---|---|
+| `SCHEMA_REGISTRY_URL` | Registry base URL (default: `http://localhost:8081`) |
+| `SCHEMA_REGISTRY_API_KEY` | Basic-auth username — Confluent Cloud only; leave blank locally |
+| `SCHEMA_REGISTRY_API_SECRET` | Basic-auth password — Confluent Cloud only; leave blank locally |
+
+For local development with the Redpanda stack, the embedded Schema Registry is available at `http://localhost:8081` with no authentication required.
+
+### Registering schemas against a live registry
+
+When the full Kafka stack is running:
+
+```bash
+# Start the full stack
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.kafka.yml \
+  up --build
+
+# Register all 12 schemas
+cd kafka
+python register_schemas.py
+
+# Verify subjects visible in Schema Registry
+curl -s http://localhost:8081/subjects | python3 -m json.tool
+# Expected: 12 subjects matching io.artisthub.events.*
+
+# Open Redpanda Console to browse schemas
+# http://localhost:8082 → Schema Registry tab
+```
+
+### How the relay uses Avro
+
+The outbox relay (`backend/app/services/outbox_relay.py`) now:
+1. Reads the JSON event dict from the outbox `payload` column (unchanged DB schema).
+2. Calls `KafkaProducerService.produce_avro(event_type, record, ...)`.
+3. The producer service resolves the schema, registers it if needed, serializes to Confluent bytes.
+4. Publishes the binary Avro message to Kafka.
+5. Marks `published_at` only after the broker acknowledgement.
+
+### How consumers use Avro
+
+Both consumers (`analytics_consumer.py`, `notification_consumer.py`) call `parse_message()` which:
+- Detects Confluent magic byte `0x00` → calls `avro_utils.decode()` → returns typed dict.
+- Falls back to JSON for unit tests (no magic byte).
+
+This means **all existing 377 tests continue to pass** — the test harness sends plain JSON which triggers the JSON fallback path, while production traffic uses the Avro path.
+
+### Known limitations (Phase 7F)
+
+1. **Deserialization failure before event_id extraction**: If a consumer receives a Confluent-framed message with an unknown `schema_id`, deserialization fails before the `event_id` can be read from the payload. The dead-letter record is published with `event_id=null`. This is documented in both consumer modules.
+2. **Schema Registry unreachable on first produce**: If Schema Registry is down when the relay starts, `get_or_register_schema_id()` raises `requests.ConnectionError`. The outbox row records `last_error` and will be retried on the next relay cycle.
+3. **No Avro for dead-letter**: Dead-letter messages are plain JSON (not Avro). This is by design — the dead-letter topic is consumed by monitoring tooling that should not depend on a domain schema.
+
+---
+
 ## 13. Testing
 
 All tests run from `backend/`. The test suite uses an in-memory SQLite database (`TestingConfig`) — no test ever touches the development database.

@@ -15,12 +15,24 @@ Or via the convenience entry point:
 What the relay does
 -------------------
 1. Polls the event_outbox table for rows where published_at IS NULL.
-2. Publishes each pending row to Kafka using KafkaProducerService.
-3. Waits for the broker acknowledgement via the delivery callback.
-4. On success: sets published_at = now().
-5. On failure: increments publish_attempts, records last_error,
+2. Deserializes the JSON payload stored in the outbox.
+3. Converts the dict to an Avro-serialized Confluent wire-format message
+   via KafkaProducerService.produce_avro().
+4. Waits for the broker acknowledgement via the delivery callback.
+5. On success: sets published_at = now().
+6. On failure: increments publish_attempts, records last_error,
    leaves published_at = NULL so the row is retried.
-6. Loops indefinitely with a configurable poll interval.
+7. Loops indefinitely with a configurable poll interval.
+
+Phase 7F changes
+----------------
+- The relay now calls producer.produce_avro() instead of producer.produce().
+- The JSON payload from the outbox is decoded and passed as the ``record``
+  argument; the KafkaProducerService serializes it to Confluent Avro bytes.
+- The outbox DB schema is unchanged — payload column still stores the full
+  event JSON (envelope + domain payload) as a UTF-8 string.
+- If Schema Registry is unreachable or the schema is invalid, the error is
+  recorded in last_error and published_at remains NULL (retry on next cycle).
 
 Reliability properties
 ----------------------
@@ -37,6 +49,7 @@ Reliability properties
 Configuration (environment variables)
 --------------------------------------
 KAFKA_BOOTSTRAP_SERVERS  Broker list (default: localhost:9092)
+SCHEMA_REGISTRY_URL      Schema Registry URL (default: http://localhost:8081)
 OUTBOX_POLL_INTERVAL     Seconds between polls (default: 5)
 OUTBOX_BATCH_SIZE        Rows fetched per poll cycle (default: 100)
 FLASK_ENV                Controls which Flask config is loaded
@@ -144,19 +157,24 @@ def poll_and_publish(
         for row in pending:
             callback = _make_delivery_callback(row.id, flask_app)
             try:
-                producer.produce(
+                # Decode the outbox JSON payload to a dict, then let the
+                # producer serialize it to Confluent Avro wire format.
+                record = row.payload_dict()
+                producer.produce_avro(
                     topic=row.topic,
+                    event_type=row.event_type,
                     key=row.message_key,
-                    value=row.payload,
+                    record=record,
                     on_delivery=callback,
                 )
             except Exception as exc:  # noqa: BLE001
-                # produce() raised before enqueueing — update row directly.
+                # produce_avro() raised before enqueueing — update row.
                 row.publish_attempts += 1
                 row.last_error = str(exc)
                 db.session.commit()
                 logger.error(
-                    "Relay produce error | outbox_id=%d event_type=%s err=%s",
+                    "Relay produce_avro error | "
+                    "outbox_id=%d event_type=%s err=%s",
                     row.id, row.event_type, exc,
                 )
 

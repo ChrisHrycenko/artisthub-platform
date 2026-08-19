@@ -1,7 +1,7 @@
 """
 consumers/analytics_consumer.py
 
-Real-Time Analytics Consumer for ArtistHub — Phase 7D.
+Real-Time Analytics Consumer for ArtistHub — Phase 7D / 7F.
 
 Consumer group:   artisthub.analytics.v1
 Subscribed topics: artisthub.social, artisthub.catalog, artisthub.identity
@@ -35,7 +35,7 @@ Offset management
 - enable.auto.commit = False
 - Sequence per message:
     1. Consume message
-    2. Deserialise JSON
+    2. Deserialise (Avro wire format in Phase 7F; JSON in tests)
     3. Validate required envelope fields (event_id, event_type, payload)
     4. Check ProcessedEvent deduplication table
     5. Apply analytics side effect (update AnalyticsState)
@@ -47,18 +47,28 @@ Offset management
 
 Error handling
 --------------
-- JSONDecodeError / missing envelope fields → dead-letter
+- Avro deserialization failure / missing envelope fields → dead-letter
+  NOTE: When the Confluent magic byte is present but deserialization
+  fails before the payload is readable (e.g. unknown schema_id, corrupt
+  binary), the raw bytes are captured as the dead-letter original_payload
+  but the event_id may not be extractable. This is logged clearly.
 - Unknown event_type → log INFO, skip (not dead-letter — expected)
 - DB exception on analytics update → retry up to MAX_RETRIES with
   exponential backoff; if retries exhausted → dead-letter
-- Dead-letter publishes to artisthub.deadletter (JSON, no Avro)
-- Dead-letter messages are never re-consumed by this consumer (different
-  topic, different consumer group)
+- Dead-letter publishes to artisthub.deadletter (plain JSON, not Avro)
+- Dead-letter messages are never re-consumed by this consumer
 
-Serialisation
--------------
-Phase 7D processes Phase 7C JSON payloads. Avro/Schema Registry
-enforcement is Phase 7F and does not affect this consumer's correctness.
+Serialisation (Phase 7F)
+------------------------
+Messages from the relay are Confluent Avro wire format:
+  [0x00][schema_id: 4 bytes big-endian][Avro binary payload]
+
+parse_message() detects the format automatically:
+  - If the first byte is 0x00 (Confluent magic): attempt Avro decode via
+    avro_utils.decode() (requires Schema Registry to resolve schema_id).
+  - Otherwise: attempt JSON decode (used by unit tests and legacy tools).
+
+Both paths produce an identical event dict with the same envelope fields.
 
 Configuration (environment variables)
 --------------------------------------
@@ -67,6 +77,9 @@ KAFKA_SECURITY_PROTOCOL  PLAINTEXT (default) or SASL_SSL
 KAFKA_SASL_MECHANISM     PLAIN
 CONFLUENT_API_KEY        SASL username (Confluent Cloud)
 CONFLUENT_API_SECRET     SASL password (Confluent Cloud)
+SCHEMA_REGISTRY_URL      Schema Registry URL (default: http://localhost:8081)
+SCHEMA_REGISTRY_API_KEY  Schema Registry basic-auth username (Cloud only)
+SCHEMA_REGISTRY_API_SECRET Schema Registry basic-auth password (Cloud only)
 KAFKA_CONSUMER_GROUP     Consumer group (default: artisthub.analytics.v1)
 ANALYTICS_MAX_RETRIES    Max DB retries before dead-letter (default: 3)
 ANALYTICS_RETRY_BACKOFF  Base retry sleep in seconds (default: 1.0)
@@ -314,12 +327,43 @@ def parse_message(raw_value: bytes) -> dict:
     """
     Deserialise a raw Kafka message value to a Python dict.
 
-    Raises ValueError on non-JSON or missing required envelope fields.
+    Phase 7F: Supports both Confluent Avro wire format and plain JSON.
+
+    Detection logic:
+      - If raw_value[0] == 0x00 (Confluent magic byte):
+          → Decode via avro_utils.decode() (Schema Registry required).
+      - Otherwise:
+          → Attempt UTF-8 JSON decode (unit tests, legacy tools).
+
+    Both paths must produce a dict with at least:
+      event_id, event_type, payload (dict)
+
+    Raises ValueError on deserialization failure or missing envelope fields.
+
+    NOTE: When Avro deserialization fails before the payload is readable
+    (e.g. unknown schema_id, corrupt binary), the event_id cannot be
+    extracted for the dead-letter envelope. The caller captures the raw
+    bytes as original_payload and logs "event_id=None" in the dead-letter
+    record. This is a known limitation documented in Phase 7F.
     """
-    try:
-        event = json.loads(raw_value.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(f"JSON decode error: {exc}") from exc
+    if not raw_value:
+        raise ValueError("Empty message value")
+
+    # ---- Confluent Avro wire format (magic byte = 0x00) ---------------
+    if raw_value[0:1] == b"\x00":
+        try:
+            from app.services.avro_utils import decode as avro_decode
+            event = avro_decode(raw_value)
+        except Exception as exc:
+            raise ValueError(
+                f"Avro deserialization error: {exc}"
+            ) from exc
+    else:
+        # ---- Plain JSON (unit tests / legacy) -------------------------
+        try:
+            event = json.loads(raw_value.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"JSON decode error: {exc}") from exc
 
     for field in ("event_id", "event_type", "payload"):
         if field not in event:

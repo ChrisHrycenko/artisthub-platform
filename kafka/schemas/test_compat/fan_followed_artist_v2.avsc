@@ -1,0 +1,78 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "FanFollowedArtist",
+  "doc": "Phase 7F compatibility test schema v2: adds optional 'source_device' field with a default. This is a BACKWARD-compatible change — old consumers that do not know about 'source_device' can still read v2 messages using the default value. This file is used ONLY in the Phase 7F compatibility test; it is NOT registered as the production schema.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'fan.followed.artist'.",
+      "default": "fan.followed.artist"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. v2 adds source_device field.",
+      "default": "2"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the follow action."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Optional Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "FanFollowedArtistPayload",
+        "doc": "Business data for the fan.followed.artist event.",
+        "fields": [
+          {
+            "name": "follow_id",
+            "type": "int",
+            "doc": "Primary key of the new Follow row."
+          },
+          {
+            "name": "fan_id",
+            "type": "int",
+            "doc": "Primary key of the fan who followed."
+          },
+          {
+            "name": "artist_id",
+            "type": "int",
+            "doc": "Primary key of the artist being followed."
+          },
+          {
+            "name": "followed_at",
+            "type": "string",
+            "doc": "ISO 8601 UTC datetime when the follow was created."
+          },
+          {
+            "name": "source_device",
+            "type": ["null", "string"],
+            "doc": "NEW in v2: optional device identifier (web, ios, android). Null when not provided by the client. BACKWARD-compatible addition with null default.",
+            "default": null
+          }
+        ]
+      }
+    }
+  ]
+}

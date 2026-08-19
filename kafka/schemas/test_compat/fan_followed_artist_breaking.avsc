@@ -1,0 +1,58 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "FanFollowedArtist",
+  "doc": "Phase 7F compatibility test: BREAKING change for negative test. Removes 'follow_id' (required in v1) — this is NOT backward-compatible. Old consumers reading v2-encoded messages cannot reconstruct 'follow_id'. This file exists ONLY to verify that Schema Registry correctly REJECTS this schema. It is NEVER registered as a production schema.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string"
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "default": "fan.followed.artist"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "default": "3"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string"
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "FanFollowedArtistPayload",
+        "doc": "follow_id REMOVED — breaking change.",
+        "fields": [
+          {
+            "name": "fan_id",
+            "type": "int"
+          },
+          {
+            "name": "artist_id",
+            "type": "int"
+          },
+          {
+            "name": "followed_at",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}
