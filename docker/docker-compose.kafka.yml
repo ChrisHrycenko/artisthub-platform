@@ -166,17 +166,67 @@ services:
 
   # ------------------------------------------------------------------ #
   # Extend the base `backend` service with Kafka environment variables  #
-  #                                                                     #
-  # These are injected NOW so that Phase 7C (producer integration)      #
-  # requires only application code changes — not infrastructure changes.#
-  #                                                                     #
-  # ⚠️  Flask does NOT read these variables yet. No events are produced.#
   # ------------------------------------------------------------------ #
   backend:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
       SCHEMA_REGISTRY_URL: "http://redpanda:8081"
 
+  # ------------------------------------------------------------------ #
+  # Outbox relay — publishes pending outbox rows to Kafka               #
+  # ------------------------------------------------------------------ #
+  outbox-relay:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["python", "run_relay.py"]
+    env_file:
+      - ../.env
+    environment:
+      FLASK_ENV: "production"
+      KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
+      SCHEMA_REGISTRY_URL: "http://redpanda:8081"
+      OUTBOX_POLL_INTERVAL: "5"
+      OUTBOX_BATCH_SIZE: "100"
+    volumes:
+      - db-data:/app/instance
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ #
+  # Analytics consumer — real-time per-artist engagement counters       #
+  # Consumer group: artisthub.analytics.v1                              #
+  # Subscribes to: social, catalog, identity                            #
+  # ------------------------------------------------------------------ #
+  analytics-consumer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["python", "run_analytics_consumer.py"]
+    env_file:
+      - ../.env
+    environment:
+      FLASK_ENV: "production"
+      KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
+      SCHEMA_REGISTRY_URL: "http://redpanda:8081"
+      KAFKA_CONSUMER_GROUP: "artisthub.analytics.v1"
+      ANALYTICS_MAX_RETRIES: "3"
+      ANALYTICS_RETRY_BACKOFF: "1.0"
+    volumes:
+      - db-data:/app/instance
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
   redpanda-data:
+    driver: local
+  db-data:
     driver: local
