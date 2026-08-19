@@ -24,12 +24,13 @@
 9. [API Reference](#9-api-reference)
 10. [Local Installation](#10-local-installation)
 11. [Docker](#11-docker)
-12. [Testing](#12-testing)
-13. [Security](#13-security)
-14. [Roadmap](#14-roadmap)
-15. [Enterprise Evolution Roadmap](#15-enterprise-evolution-roadmap)
-16. [IBM Bob Development Methodology](#16-ibm-bob-development-methodology)
-17. [Contributing](#17-contributing)
+12. [Local Kafka Development Stack (Phase 7A)](#12-local-kafka-development-stack-phase-7a)
+13. [Testing](#13-testing)
+14. [Security](#14-security)
+15. [Roadmap](#15-roadmap)
+16. [Enterprise Evolution Roadmap](#16-enterprise-evolution-roadmap)
+17. [IBM Bob Development Methodology](#17-ibm-bob-development-methodology)
+18. [Contributing](#18-contributing)
 
 ---
 
@@ -719,7 +720,101 @@ DATABASE_URL=postgresql://user:password@host:5432/artisthub
 
 ---
 
-## 12. Testing
+## 12. Local Kafka Development Stack (Phase 7A)
+
+> ⚠️ **Kafka event production from ArtistHub is NOT yet implemented.**
+> Phase 7A provisions the local broker and topics only. The Flask application
+> does not produce any events until Phase 7C (Outbox + producer integration).
+
+This section documents the local event-streaming development environment added in
+Phase 7A. It runs alongside the existing ArtistHub stack without modifying any
+v0.1.0 files.
+
+### What Phase 7A adds
+
+| File | Purpose |
+|---|---|
+| `docker/docker-compose.kafka.yml` | Compose override — adds Redpanda, Console, and topic init |
+| `docker/redpanda-console-config.yaml` | Redpanda Console configuration (broker + Schema Registry URLs) |
+| `docker/.env.kafka.example` | Documents Kafka environment variables for local and cloud use |
+| `scripts/validate-phase-7a.sh` | Automated validation script |
+
+### Starting the full stack (ArtistHub + Kafka)
+
+```bash
+# From the repo root
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.kafka.yml \
+  up --build
+```
+
+| Service | URL | Purpose |
+|---|---|---|
+| ArtistHub frontend + API | http://localhost:8080 | nginx (unchanged from v0.1.0) |
+| Redpanda Console | http://localhost:8082 | Topic browser, consumer lag |
+| Kafka broker (host) | localhost:9092 | `rpk` / Python client access |
+| Schema Registry | http://localhost:8081 | Avro schema storage (Phase 7B+) |
+
+### Starting Kafka infrastructure only (no Flask / nginx)
+
+```bash
+docker-compose -f docker/docker-compose.kafka.yml up
+```
+
+### Kafka topics provisioned
+
+| Topic | Partitions | Retention | Events |
+|---|---|---|---|
+| `artisthub.social` | 6 | 7 days | follows, unfollows, posts |
+| `artisthub.catalog` | 6 | 30 days | releases, merch |
+| `artisthub.identity` | 3 | 90 days | artist registration, profile updates |
+| `artisthub.deadletter` | 3 | 14 days | unprocessable consumer events |
+
+### Inspecting topics (rpk CLI)
+
+```bash
+# List topics
+docker exec artisthub-redpanda rpk topic list
+
+# Describe a topic (partition count, offsets)
+docker exec artisthub-redpanda rpk topic describe artisthub.social
+
+# Produce a test message
+echo "hello-kafka" | docker exec -i artisthub-redpanda \
+  rpk topic produce artisthub.social --key test
+
+# Consume messages (Ctrl+C to stop)
+docker exec artisthub-redpanda \
+  rpk topic consume artisthub.social --offset start
+```
+
+### Running the automated validation
+
+```bash
+# Start the stack first, then:
+bash scripts/validate-phase-7a.sh
+```
+
+### Teardown
+
+```bash
+# Stop all services
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.kafka.yml \
+  down
+
+# Remove Redpanda data volume (resets topic data)
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.kafka.yml \
+  down -v
+```
+
+---
+
+## 13. Testing
 
 All tests run from `backend/`. The test suite uses an in-memory SQLite database (`TestingConfig`) — no test ever touches the development database.
 
@@ -781,7 +876,7 @@ GitHub Actions runs `flake8` and `pytest --cov --cov-fail-under=80` on every pus
 
 ---
 
-## 14. Roadmap
+## 15. Roadmap
 
 | Phase | Description | Status |
 |---|---|---|
@@ -791,14 +886,18 @@ GitHub Actions runs `flake8` and `pytest --cov --cov-fail-under=80` on every pus
 | 4 | Frontend SPA — 12 pages (HTML/CSS/JS, api.js wrapper, artist + fan flows) | ✅ Complete |
 | 5 | Docker packaging + GitHub Actions CI | ✅ Complete |
 | 6 | `v0.1.0` MVP tag, PostgreSQL migration guide | 🔜 Planned |
-| 7 | Real payment integration (Stripe PaymentIntents) | 🔜 Future |
-| 8 | OpenShift deployment + IBM watsonx anomaly detection | 🔜 Future |
+| 7A | Kafka infra — local Redpanda broker, 4 topics, Redpanda Console | ✅ Complete |
+| 7B | Kafka event contracts — 12 Avro schemas, Schema Registry | 🔜 Awaiting approval |
+| 7C | Kafka producer — Outbox Pattern, route instrumentation | 🔜 Awaiting approval |
+| 7D–7H | Analytics consumer, notification consumer, Confluent Cloud | 🔜 Awaiting approval |
+| 8 | Real payment integration (Stripe PaymentIntents) | 🔜 Future |
+| 9 | OpenShift deployment + IBM watsonx anomaly detection | 🔜 Future |
 
 ---
 
-## 15. Enterprise Evolution Roadmap
+## 16. Enterprise Evolution Roadmap
 
-> ⚠️ **Future Architecture — not currently implemented.** This section describes a conceptual evolution of ArtistHub from its current MVP state onto enterprise IBM and Red Hat infrastructure. No Kafka brokers, OpenShift clusters, or watsonx services exist in the codebase today. The purpose of this section is to demonstrate how the architectural decisions made in the MVP — a clean REST API contract, environment-variable-driven configuration, container-native packaging — create a tractable path to enterprise scale.
+> ⚠️ **Future Architecture — partially in progress.** Phase 7A has provisioned a local Redpanda (Kafka-compatible) broker for development. The Flask application does not yet produce events — that is Phase 7C. OpenShift clusters and watsonx services are not implemented. This section describes the full enterprise target state and the rationale for the architectural decisions that make it achievable.
 
 ---
 
@@ -960,7 +1059,7 @@ The table below maps every current constraint to its enterprise resolution. The 
 
 ---
 
-## 16. IBM Bob Development Methodology
+## 17. IBM Bob Development Methodology
 
 ArtistHub was built using **IBM Bob** — IBM's AI software engineering assistant — as an active collaborator across the full development lifecycle. This section documents how Bob was used, what it produced, and how the developer maintained oversight and responsibility for every decision.
 
@@ -1040,7 +1139,7 @@ This methodology demonstrates that AI-assisted development, practised with appro
 
 ---
 
-## 17. Contributing
+## 18. Contributing
 
 1. Create a feature branch: `git checkout -b feature/your-feature`
 2. Follow the conventions in [`AGENTS.md`](AGENTS.md)

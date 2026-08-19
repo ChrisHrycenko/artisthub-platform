@@ -1,0 +1,182 @@
+# docker/docker-compose.kafka.yml
+#
+# Phase 7A — Local Kafka-compatible event-streaming infrastructure for ArtistHub.
+#
+# This file is a Docker Compose OVERRIDE — it extends the base v0.1.0 stack.
+# It does NOT modify the existing Flask application, routes, or database.
+#
+# Usage (from the repo root):
+#   docker-compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.kafka.yml \
+#     up --build
+#
+# To run just the Kafka infrastructure (no Flask / nginx):
+#   docker-compose -f docker/docker-compose.kafka.yml up
+#
+# Services added by this file:
+#   redpanda         Kafka-compatible single-node broker (ports 9092, 8081, 9644)
+#   redpanda-console Redpanda web UI (port 8082)
+#   kafka-init       One-shot container that creates the four ArtistHub topics
+#
+# The base `backend` service is extended with KAFKA_BOOTSTRAP_SERVERS and
+# SCHEMA_REGISTRY_URL so it is ready to produce events in Phase 7C without
+# any further compose file changes.
+#
+# ⚠️  Kafka event production from ArtistHub is NOT yet implemented.
+#     The Flask application does not produce any events in Phase 7A.
+#     These environment variables are injected now so Phase 7C requires
+#     only application code changes, not infrastructure changes.
+#
+# Ports exposed on the host:
+#   8080  nginx / ArtistHub frontend + API   (base stack — unchanged)
+#   9092  Redpanda Kafka broker              (OUTSIDE listener)
+#   8081  Redpanda Schema Registry
+#   8082  Redpanda Console (browser UI)
+#   9644  Redpanda Admin API
+
+version: "3.9"
+
+services:
+
+  # ------------------------------------------------------------------ #
+  # Redpanda — Kafka-compatible broker                                  #
+  #                                                                     #
+  # Two Kafka listeners:                                                #
+  #   PLAINTEXT  redpanda:29092   — used by other containers           #
+  #   OUTSIDE    localhost:9092   — used by host-side tools / clients  #
+  #                                                                     #
+  # Schema Registry is embedded in Redpanda (no separate container).   #
+  # Admin API is available at port 9644.                                #
+  # ------------------------------------------------------------------ #
+  redpanda:
+    image: redpandadata/redpanda:v24.1.13
+    container_name: artisthub-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --schema-registry-addr=http://0.0.0.0:8081
+      - --pandaproxy-addr=http://0.0.0.0:8082
+      - --advertise-pandaproxy-addr=http://localhost:8082
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --default-log-level=warn
+    ports:
+      - "9092:9092"   # Kafka API — host access
+      - "8081:8081"   # Schema Registry
+      - "9644:9644"   # Admin API
+      - "8083:8082"   # HTTP Proxy (avoids collision with Redpanda Console on 8082)
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      # rpk cluster health polls the admin API; returns exit 0 when healthy.
+      test: ["CMD-SHELL", "rpk cluster health --api-urls http://localhost:9644 | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ #
+  # Redpanda Console — browser UI for topic inspection and consumer lag #
+  # ------------------------------------------------------------------ #
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    container_name: artisthub-redpanda-console
+    ports:
+      - "8082:8080"   # http://localhost:8082 — browser access
+    environment:
+      CONFIG_FILEPATH: /etc/redpanda-console/config.yaml
+    volumes:
+      - ./redpanda-console-config.yaml:/etc/redpanda-console/config.yaml:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ #
+  # kafka-init — creates the four ArtistHub topics then exits           #
+  #                                                                     #
+  # Runs once after the broker is healthy. Uses the rpk CLI that is     #
+  # embedded inside the Redpanda image (no extra tooling needed).       #
+  # restart: "no" ensures it does not loop.                             #
+  # ------------------------------------------------------------------ #
+  kafka-init:
+    image: redpandadata/redpanda:v24.1.13
+    container_name: artisthub-kafka-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    # Each topic is created idempotently (--if-not-exists).
+    # Partition counts and retention match the approved architecture plan.
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      set -e
+
+      BROKER="redpanda:29092"
+
+      echo "=== Creating ArtistHub Kafka topics ==="
+
+      rpk topic create artisthub.social \
+        --brokers $$BROKER \
+        --partitions 6 \
+        --replicas 1 \
+        --topic-config retention.ms=604800000 \
+        --if-not-exists
+      echo "  artisthub.social: 6 partitions, 7-day retention"
+
+      rpk topic create artisthub.catalog \
+        --brokers $$BROKER \
+        --partitions 6 \
+        --replicas 1 \
+        --topic-config retention.ms=2592000000 \
+        --if-not-exists
+      echo "  artisthub.catalog: 6 partitions, 30-day retention"
+
+      rpk topic create artisthub.identity \
+        --brokers $$BROKER \
+        --partitions 3 \
+        --replicas 1 \
+        --topic-config retention.ms=7776000000 \
+        --if-not-exists
+      echo "  artisthub.identity: 3 partitions, 90-day retention"
+
+      rpk topic create artisthub.deadletter \
+        --brokers $$BROKER \
+        --partitions 3 \
+        --replicas 1 \
+        --topic-config retention.ms=1209600000 \
+        --if-not-exists
+      echo "  artisthub.deadletter: 3 partitions, 14-day retention"
+
+      echo ""
+      echo "=== Topic list ==="
+      rpk topic list --brokers $$BROKER
+
+      echo ""
+      echo "=== kafka-init complete ==="
+    restart: "no"
+
+  # ------------------------------------------------------------------ #
+  # Extend the base `backend` service with Kafka environment variables  #
+  #                                                                     #
+  # These are injected NOW so that Phase 7C (producer integration)      #
+  # requires only application code changes — not infrastructure changes.#
+  #                                                                     #
+  # ⚠️  Flask does NOT read these variables yet. No events are produced.#
+  # ------------------------------------------------------------------ #
+  backend:
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
+      SCHEMA_REGISTRY_URL: "http://redpanda:8081"
+
+volumes:
+  redpanda-data:
+    driver: local

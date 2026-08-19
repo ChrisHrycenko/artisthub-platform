@@ -1,0 +1,21 @@
+# docker/redpanda-console-config.yaml
+#
+# Redpanda Console configuration for ArtistHub local development.
+# Mounted read-only into the redpanda-console container.
+#
+# Console UI: http://localhost:8082
+# Connects to Redpanda on the internal Docker network (redpanda:29092).
+
+kafka:
+  brokers:
+    - redpanda:29092
+  schemaRegistry:
+    enabled: true
+    urls:
+      - "http://redpanda:8081"
+
+redpanda:
+  adminApi:
+    enabled: true
+    urls:
+      - "http://redpanda:9644"
