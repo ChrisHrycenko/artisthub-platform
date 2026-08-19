@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Analytics — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="artist-dashboard.html" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ================================================================
+         Loading skeleton — visible while the API call is in flight.
+    ================================================================ -->
+    <div id="analytics-loading" class="section">
+      <div class="container">
+        <div class="placeholder-text" style="width:260px;height:2rem;margin-bottom:.75rem;"></div>
+        <div class="placeholder-text" style="width:160px;height:1rem;margin-bottom:2rem;"></div>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="placeholder-text" style="width:60px;height:2.5rem;margin:0 auto .5rem;"></div></div>
+          <div class="stat-card"><div class="placeholder-text" style="width:60px;height:2.5rem;margin:0 auto .5rem;"></div></div>
+          <div class="stat-card"><div class="placeholder-text" style="width:60px;height:2.5rem;margin:0 auto .5rem;"></div></div>
+          <div class="stat-card"><div class="placeholder-text" style="width:60px;height:2.5rem;margin:0 auto .5rem;"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Error state — shown if the artist is not found or no ID given.
+    ================================================================ -->
+    <div id="analytics-error" class="section" style="display:none;">
+      <div class="container">
+        <div class="alert alert-error" id="analytics-error-message">
+          Artist not found.
+        </div>
+        <a href="browse-artists.html" class="btn btn-secondary" style="margin-top:1rem;">
+          ← Back to Artists
+        </a>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Analytics content — hidden until data loads.
+    ================================================================ -->
+    <div id="analytics-content" style="display:none;">
+
+      <!-- Page header -->
+      <section class="analytics-hero">
+        <div class="container">
+          <div class="analytics-header">
+            <div>
+              <h1 id="analytics-artist-name"></h1>
+              <p class="analytics-subtitle">
+                Artist Analytics Snapshot ·
+                <span class="analytics-freshness" id="analytics-freshness"></span>
+              </p>
+            </div>
+            <div class="analytics-header-actions">
+              <a id="analytics-profile-link" href="#" class="btn btn-secondary">
+                View Profile
+              </a>
+              <button id="analytics-refresh-btn" class="btn btn-primary">
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Core Metrics ────────────────────────────────────────── -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2 class="section-title">Core Metrics</h2>
+          <p class="section-desc">
+            Live counts pulled from the ArtistHub database.
+            <!-- Future: add a "Last 30 days" toggle once time-series data
+                 is available from the stream_event / order / follow tables. -->
+          </p>
+          <div class="stats-grid analytics-stats" id="core-stats-grid">
+            <!-- Cards are injected by artist-analytics.js -->
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Catalogue Breakdown ──────────────────────────────────── -->
+      <section class="section">
+        <div class="container">
+          <h2 class="section-title">Catalogue Breakdown</h2>
+          <p class="section-desc">
+            Visualises how the artist's content is distributed across
+            releases, posts and merch.
+          </p>
+
+          <!--
+            Bar chart rendered with inline SVG.
+
+            Why SVG, not a library?
+            The MVP deliberately avoids third-party chart libraries
+            (Chart.js, D3.js, etc.) so the page has zero extra requests
+            and the code is fully readable without external docs.
+
+            Future expansion:
+            When streaming/sales data is added, swap this SVG section for
+            a Chart.js LineChart showing "streams per day" or
+            "revenue per week".  The data shape would be:
+              [{ label: "Mon", streams: 42 }, ...]
+            Chart.js datasets map 1-to-1 onto that structure with no
+            backend changes — only the frontend needs to add the library
+            and wire the new keys.
+          -->
+          <div class="chart-container" id="catalogue-chart-container">
+            <svg
+              id="catalogue-chart"
+              role="img"
+              aria-label="Catalogue breakdown bar chart"
+              class="analytics-bar-chart"
+            >
+              <!-- Bars injected by artist-analytics.js buildBarChart() -->
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── What's Next ─────────────────────────────────────────── -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2 class="section-title">Roadmap: Expanding Analytics</h2>
+          <p class="section-desc">
+            The metrics above are the foundation. Here is exactly how each
+            dimension can be extended — each card maps to a concrete backend
+            change and a specific IBM technology integration.
+          </p>
+          <div class="roadmap-grid">
+
+            <div class="roadmap-card roadmap-streams">
+              <div class="roadmap-icon" aria-hidden="true">▶</div>
+              <h3>Streaming Analytics</h3>
+              <p>
+                Every time a fan clicks <strong>Stream ↗</strong> on a release,
+                publish a <code>release.streamed</code> event. A lightweight
+                <code>stream_event</code> table stores
+                <em>artist_id, release_id, fan_id, streamed_at</em>.
+              </p>
+              <p>
+                The analytics endpoint gains new keys:
+                <code>total_streams</code>, <code>streams_last_30_days</code>,
+                <code>top_release</code>, <code>streams_by_release[]</code>.
+              </p>
+              <p class="roadmap-tech">
+                <strong>IBM Confluent (Kafka):</strong> stream events flow
+                through a Kafka topic in real time — no polling, no DB writes
+                in the hot path. A consumer microservice batches and persists
+                them, keeping the Flask API responsive under load.
+              </p>
+            </div>
+
+            <div class="roadmap-card roadmap-sales">
+              <div class="roadmap-icon" aria-hidden="true">$</div>
+              <h3>Sales Analytics</h3>
+              <p>
+                The <code>order</code> table (already in the data model)
+                records <em>fan_id, item_type, item_id, quantity,
+                unit_price</em>. Aggregating it unlocks:
+                <code>total_orders</code>, <code>total_revenue</code>,
+                <code>revenue_last_30_days</code>,
+                <code>top_product</code>.
+              </p>
+              <p>
+                Revenue is stored as <code>NUMERIC(10,2)</code> to avoid
+                floating-point rounding errors — the same pattern already
+                used in <code>merch_product.price</code>.
+              </p>
+              <p class="roadmap-tech">
+                <strong>OpenShift:</strong> deploy the Flask API and a separate
+                orders worker as independent pods. The orders service scales
+                independently during merch drops without touching the profile
+                or analytics pods.
+              </p>
+            </div>
+
+            <div class="roadmap-card roadmap-audience">
+              <div class="roadmap-icon" aria-hidden="true">↑</div>
+              <h3>Audience Analytics</h3>
+              <p>
+                Extend the existing <code>follow</code> table with a
+                <code>source</code> column
+                (<em>"browse", "recommendation", "share"</em>) and a nullable
+                <code>unfollowed_at</code> for churn tracking. This gives:
+                <code>new_followers_last_30_days</code>,
+                <code>churn_rate</code>, <code>follower_locations</code>.
+              </p>
+              <p>
+                A <em>fan engagement score</em> combines follows, streams and
+                orders into a single composite metric — useful for prioritising
+                which fans to reach out to for early access drops.
+              </p>
+              <p class="roadmap-tech">
+                <strong>IBM watsonx AI:</strong> pass the snapshot to
+                <code>watsonx.ai</code> text generation to produce a plain-
+                English summary: <em>"Streams are up 42% this week. Consider
+                posting more content — artists with 3+ posts/week see 18%
+                higher follower growth."</em>
+              </p>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+    </div><!-- /#analytics-content -->
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/artist-analytics.js"></script>
+
+</body>
+</html>

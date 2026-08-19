@@ -1,0 +1,120 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ArtistHub — Music Discovery for Independent Artists</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <!-- ================================================================
+       HEADER / NAV
+       Navigation links will be conditionally shown/hidden by auth.js
+       once session state is known.
+  ================================================================ -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-posts.html">Feed</a>
+        <a href="browse-merch.html">Merch</a>
+        <!-- Auth links — toggled by auth.js based on session state -->
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ================================================================
+       HERO
+  ================================================================ -->
+  <main>
+    <section class="hero">
+      <div class="container">
+        <h1>Discover Independent Music</h1>
+        <p class="hero-sub">
+          ArtistHub connects fans directly with independent musicians —
+          browse releases, follow artists, and support the music you love.
+        </p>
+        <div class="hero-actions">
+          <a href="browse-releases.html" class="btn btn-primary">Browse Music</a>
+          <a href="artist-register.html" class="btn btn-secondary">Join as Artist</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         FEATURED ARTISTS
+         Populated dynamically by browse.js calling GET /api/artists.
+         The placeholder cards are shown while loading.
+    ============================================================ -->
+    <section class="section">
+      <div class="container">
+        <h2>Featured Artists</h2>
+        <p class="section-sub">
+          Releases, posts, and merchandise — all in one place.
+        </p>
+        <div id="artists-grid" class="card-grid">
+          <!-- Artist cards injected here by browse.js -->
+          <div class="card placeholder">
+            <div class="placeholder-img"></div>
+            <p class="placeholder-text">Loading artists…</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         HOW IT WORKS
+    ============================================================ -->
+    <section class="section section-alt">
+      <div class="container">
+        <h2>How It Works</h2>
+        <div class="how-grid">
+          <div class="how-item">
+            <span class="how-icon">🎵</span>
+            <h3>Discover</h3>
+            <p>Browse music releases filtered by genre, artist, or release date.</p>
+          </div>
+          <div class="how-item">
+            <span class="how-icon">❤️</span>
+            <h3>Follow</h3>
+            <p>Follow your favourite artists and get their latest posts in your feed.</p>
+          </div>
+          <div class="how-item">
+            <span class="how-icon">🛍️</span>
+            <h3>Support</h3>
+            <p>Buy releases and merchandise directly — every purchase goes to the artist.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================================================================
+       FOOTER
+  ================================================================ -->
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <!-- api.js must be loaded first — all other scripts depend on it -->
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/browse.js"></script>
+
+</body>
+</html>

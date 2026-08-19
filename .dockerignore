@@ -1,0 +1,64 @@
+# .dockerignore
+#
+# Prevents files that must never enter the Docker build context from being
+# sent to the daemon. This keeps images small and secrets out of layers.
+#
+# Build is invoked from repo root:
+#   docker build -f docker/Dockerfile -t artisthub-backend .
+
+# ------------------------------------------------------------------ #
+# Secrets — must NEVER be baked into the image                        #
+# ------------------------------------------------------------------ #
+.env
+
+# ------------------------------------------------------------------ #
+# Python artefacts — rebuilt inside the container                     #
+# ------------------------------------------------------------------ #
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
+dist/
+build/
+.eggs/
+
+# ------------------------------------------------------------------ #
+# Virtual environment — the image installs its own deps via pip       #
+# ------------------------------------------------------------------ #
+backend/venv/
+venv/
+.venv/
+
+# ------------------------------------------------------------------ #
+# Database files — runtime data, not source code                      #
+# ------------------------------------------------------------------ #
+backend/instance/
+*.db
+
+# ------------------------------------------------------------------ #
+# Test / CI artefacts — not needed in the production image            #
+# ------------------------------------------------------------------ #
+backend/tests/
+backend/.coverage
+backend/.pytest_cache/
+coverage.xml
+htmlcov/
+.github/
+
+# ------------------------------------------------------------------ #
+# Editor and OS noise                                                  #
+# ------------------------------------------------------------------ #
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ------------------------------------------------------------------ #
+# Documentation (not needed at runtime)                               #
+# ------------------------------------------------------------------ #
+README.md
+AGENTS.md
+artisthub-plan.md

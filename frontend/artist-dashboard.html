@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artist Dashboard — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="artist-dashboard.html" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="analytics-nav-link">Analytics</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ================================================================
+         Loading skeleton
+    ================================================================ -->
+    <div id="dashboard-loading" class="section">
+      <div class="container">
+        <div class="placeholder-text" style="width:240px; height:2rem; margin-bottom:1rem;"></div>
+        <div class="placeholder-text" style="width:160px; height:1rem;"></div>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Auth error — shown when a non-artist visits this page
+    ================================================================ -->
+    <div id="dashboard-error" class="section" style="display:none;">
+      <div class="container">
+        <div class="alert alert-error">
+          You must be signed in as an artist to view this page.
+        </div>
+        <a href="artist-login.html" class="btn btn-primary" style="margin-top:1rem;">
+          Sign In
+        </a>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Dashboard content
+    ================================================================ -->
+    <div id="dashboard-content" style="display:none;">
+
+      <!-- Hero / welcome band -->
+      <section class="profile-hero">
+        <div class="container profile-header">
+          <div class="avatar avatar-initials avatar-lg" id="dash-avatar" aria-hidden="true"></div>
+          <div class="profile-meta">
+            <h1 id="dash-display-name"></h1>
+            <p id="dash-genre-location" class="profile-subtitle"></p>
+            <p id="dash-follower-count" class="profile-follower-count"></p>
+            <a id="dash-view-profile-btn" href="#" class="btn btn-secondary">
+              View Public Profile
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <!-- Stats row -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>At a Glance</h2>
+          <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+              <span class="stat-number" id="stat-followers">—</span>
+              <span class="stat-label">Followers</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-number" id="stat-releases">—</span>
+              <span class="stat-label">Releases</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-number" id="stat-posts">—</span>
+              <span class="stat-label">Posts</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-number" id="stat-merch">—</span>
+              <span class="stat-label">Merch Items</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Edit profile form -->
+      <section class="section">
+        <div class="container">
+          <h2>Edit Profile</h2>
+          <div id="profile-alert" class="alert" style="display:none;"></div>
+
+          <form id="profile-form" novalidate>
+            <div class="form-grid">
+
+              <div class="form-group">
+                <label for="display_name" class="form-label">Display Name</label>
+                <input type="text" id="display_name" name="display_name"
+                       class="form-input" maxlength="100" required />
+              </div>
+
+              <div class="form-group">
+                <label for="genre" class="form-label">Genre</label>
+                <input type="text" id="genre" name="genre"
+                       class="form-input" maxlength="100" />
+              </div>
+
+              <div class="form-group">
+                <label for="location" class="form-label">Location</label>
+                <input type="text" id="location" name="location"
+                       class="form-input" maxlength="100" />
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="bio" class="form-label">Bio</label>
+                <textarea id="bio" name="bio" class="form-input form-textarea"
+                          rows="4" maxlength="1000"
+                          placeholder="Tell fans about yourself…"></textarea>
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="profile_image_url" class="form-label">Profile Image URL</label>
+                <input type="url" id="profile_image_url" name="profile_image_url"
+                       class="form-input" placeholder="https://…" />
+              </div>
+
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="profile-save-btn">
+              Save Changes
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- New post form -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Create a Post</h2>
+          <div id="post-alert" class="alert" style="display:none;"></div>
+
+          <form id="post-form" novalidate>
+            <div class="form-group">
+              <label for="post-body" class="form-label">What's on your mind?</label>
+              <textarea
+                id="post-body"
+                name="body"
+                class="form-input form-textarea"
+                rows="4"
+                maxlength="2000"
+                placeholder="Share an update with your fans…"
+                required
+              ></textarea>
+              <p class="form-hint"><span id="post-char-count">0</span> / 2000</p>
+            </div>
+            <div class="form-group">
+              <label for="post-image" class="form-label">Image URL (optional)</label>
+              <input type="url" id="post-image" name="image_url"
+                     class="form-input" placeholder="https://…" />
+            </div>
+            <button type="submit" class="btn btn-primary" id="post-submit-btn">
+              Publish Post
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Recent posts list -->
+      <section class="section">
+        <div class="container">
+          <h2>Your Recent Posts</h2>
+          <p class="muted" id="posts-empty" style="display:none;">
+            You haven't posted anything yet.
+          </p>
+          <div id="posts-list"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- Releases management                                           -->
+      <!-- ============================================================ -->
+
+      <!-- Add release form -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Add a Release</h2>
+          <div id="release-alert" class="alert" style="display:none;"></div>
+
+          <form id="release-form" novalidate>
+            <div class="form-grid">
+
+              <div class="form-group">
+                <label for="release-title" class="form-label">Title <span aria-hidden="true">*</span></label>
+                <input
+                  type="text"
+                  id="release-title"
+                  name="title"
+                  class="form-input"
+                  maxlength="200"
+                  placeholder="e.g. Midnight Drive"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="release-type" class="form-label">Type</label>
+                <select id="release-type" name="release_type" class="form-input">
+                  <option value="Single">Single</option>
+                  <option value="EP">EP</option>
+                  <option value="Album">Album</option>
+                  <option value="Mixtape">Mixtape</option>
+                  <option value="Compilation">Compilation</option>
+                  <option value="Live">Live</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="release-genre" class="form-label">Genre</label>
+                <input
+                  type="text"
+                  id="release-genre"
+                  name="genre"
+                  class="form-input"
+                  maxlength="100"
+                  placeholder="e.g. Synthwave"
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="release-date" class="form-label">Release Date</label>
+                <input
+                  type="date"
+                  id="release-date"
+                  name="release_date"
+                  class="form-input"
+                />
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="release-streaming-url" class="form-label">Streaming URL</label>
+                <input
+                  type="url"
+                  id="release-streaming-url"
+                  name="streaming_url"
+                  class="form-input"
+                  placeholder="https://open.spotify.com/…"
+                />
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="release-artwork-url" class="form-label">Artwork URL</label>
+                <input
+                  type="url"
+                  id="release-artwork-url"
+                  name="artwork_url"
+                  class="form-input"
+                  placeholder="https://…"
+                />
+              </div>
+
+            </div><!-- /.form-grid -->
+
+            <button type="submit" class="btn btn-primary" id="release-submit-btn">
+              Add Release
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Release list -->
+      <section class="section">
+        <div class="container">
+          <h2>Your Releases</h2>
+          <p class="muted" id="releases-empty" style="display:none;">
+            You haven't added any releases yet.
+          </p>
+          <div id="releases-list"></div>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- Merchandise management                                        -->
+      <!-- ============================================================ -->
+
+      <!-- Add merch form -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Add Merchandise</h2>
+          <div id="merch-alert" class="alert" style="display:none;"></div>
+
+          <form id="merch-form" novalidate>
+            <div class="form-grid">
+
+              <div class="form-group form-group-full">
+                <label for="merch-name" class="form-label">Product Name <span aria-hidden="true">*</span></label>
+                <input
+                  type="text"
+                  id="merch-name"
+                  name="product_name"
+                  class="form-input"
+                  maxlength="200"
+                  placeholder="e.g. Tour T-Shirt"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="merch-price" class="form-label">Price (USD) <span aria-hidden="true">*</span></label>
+                <input
+                  type="number"
+                  id="merch-price"
+                  name="price"
+                  class="form-input"
+                  min="0"
+                  step="0.01"
+                  placeholder="24.99"
+                  required
+                />
+              </div>
+
+              <div class="form-group">
+                <label for="merch-inventory" class="form-label">Inventory Quantity</label>
+                <input
+                  type="number"
+                  id="merch-inventory"
+                  name="inventory_quantity"
+                  class="form-input"
+                  min="0"
+                  step="1"
+                  placeholder="Leave blank for unlimited"
+                />
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="merch-description" class="form-label">Description</label>
+                <textarea
+                  id="merch-description"
+                  name="description"
+                  class="form-input form-textarea"
+                  rows="3"
+                  maxlength="2000"
+                  placeholder="Describe your product…"
+                ></textarea>
+              </div>
+
+              <div class="form-group form-group-full">
+                <label for="merch-image-url" class="form-label">Image URL</label>
+                <input
+                  type="url"
+                  id="merch-image-url"
+                  name="image_url"
+                  class="form-input"
+                  placeholder="https://…"
+                />
+              </div>
+
+            </div><!-- /.form-grid -->
+
+            <button type="submit" class="btn btn-primary" id="merch-submit-btn">
+              Add Product
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Merch list -->
+      <section class="section">
+        <div class="container">
+          <h2>Your Merchandise</h2>
+          <p class="muted" id="merch-empty" style="display:none;">
+            You haven't added any merchandise yet.
+          </p>
+          <div id="merch-list"></div>
+        </div>
+      </section>
+
+    </div><!-- /#dashboard-content -->
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/artist-dashboard.js"></script>
+
+</body>
+</html>

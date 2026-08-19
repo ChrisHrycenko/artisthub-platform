@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artist Profile — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- ================================================================
+         Loading state — visible while the API call is in flight.
+    ================================================================ -->
+    <div id="profile-loading" class="section">
+      <div class="container">
+        <div class="profile-header skeleton">
+          <div class="avatar-placeholder placeholder-img"></div>
+          <div>
+            <div class="placeholder-text" style="width:200px; height:1.5rem; margin-bottom:.5rem;"></div>
+            <div class="placeholder-text" style="width:120px; height:1rem;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Profile content — hidden until artist data loads.
+    ================================================================ -->
+    <div id="profile-content" style="display:none;">
+
+      <!-- Artist header band -->
+      <section class="profile-hero">
+        <div class="container profile-header">
+          <!-- Avatar — falls back to initials if no image URL -->
+          <div class="avatar" id="profile-avatar" aria-hidden="true"></div>
+          <div class="profile-meta">
+            <h1 id="profile-name"></h1>
+            <p id="profile-genre-location" class="profile-subtitle"></p>
+            <p id="profile-follower-count" class="profile-follower-count"></p>
+            <!-- Edit button — only shown to the profile owner (auth.js sets visibility) -->
+            <a
+              href="artist-dashboard.html"
+              id="edit-profile-btn"
+              class="btn btn-secondary"
+              style="display:none;"
+            >Edit Profile</a>
+            <!-- Follow button — only shown to authenticated fans (artist-profile.js) -->
+            <button
+              id="follow-btn"
+              class="btn btn-primary"
+              style="display:none;"
+              data-artist-id=""
+              data-following="false"
+            >Follow</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bio -->
+      <section class="section" id="bio-section">
+        <div class="container">
+          <h2>About</h2>
+          <p id="profile-bio" class="profile-bio"></p>
+        </div>
+      </section>
+
+      <!-- Releases placeholder (Phase 2) -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Releases</h2>
+          <p class="muted" id="releases-placeholder">
+            Music releases will appear here in Phase 2.
+          </p>
+          <div id="releases-grid" class="card-grid"></div>
+        </div>
+      </section>
+
+      <!-- Posts placeholder (Phase 2) -->
+      <section class="section">
+        <div class="container">
+          <h2>Posts</h2>
+          <p class="muted" id="posts-placeholder">
+            Artist posts will appear here in Phase 2.
+          </p>
+          <div id="posts-list"></div>
+        </div>
+      </section>
+
+      <!-- Merch placeholder (Phase 2) -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Merchandise</h2>
+          <p class="muted" id="merch-placeholder">
+            Merchandise will appear here in Phase 2.
+          </p>
+          <div id="merch-grid" class="card-grid"></div>
+        </div>
+      </section>
+
+    </div><!-- /#profile-content -->
+
+    <!-- ================================================================
+         Error state — shown if artist ID is missing or not found.
+    ================================================================ -->
+    <div id="profile-error" class="section" style="display:none;">
+      <div class="container">
+        <div class="alert alert-error" id="profile-error-message">
+          Artist not found.
+        </div>
+        <a href="browse-artists.html" class="btn btn-secondary">
+          ← Back to Artists
+        </a>
+      </div>
+    </div>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/artist-profile.js"></script>
+
+</body>
+</html>

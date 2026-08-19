@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Browse Merchandise — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-posts.html">Feed</a>
+        <a href="browse-merch.html" aria-current="page">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="section">
+      <div class="container">
+
+        <div class="browse-header">
+          <div>
+            <h1>Merchandise</h1>
+            <p class="section-sub">
+              Support independent artists — browse and buy their merchandise.
+            </p>
+          </div>
+          <div class="browse-controls">
+            <input
+              type="search"
+              id="search-input"
+              class="search-box"
+              placeholder="Search products…"
+              aria-label="Search merchandise"
+            />
+          </div>
+        </div>
+
+        <!-- Stock filter chips -->
+        <div id="stock-chips" class="chip-group" aria-label="Filter by availability">
+          <button class="chip chip-active" data-stock="all">All</button>
+          <button class="chip" data-stock="in-stock">In Stock</button>
+        </div>
+
+        <p id="results-summary" class="results-summary" aria-live="polite"></p>
+
+        <!-- Product grid -->
+        <div id="merch-grid" class="card-grid merch-grid">
+          <div class="card placeholder">
+            <div class="placeholder-img"></div>
+            <p class="placeholder-text">Loading products…</p>
+          </div>
+        </div>
+
+        <div id="pagination" class="pagination"></div>
+
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/browse-merch.js"></script>
+
+</body>
+</html>

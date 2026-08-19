@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Join as a Fan — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-posts.html">Feed</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main class="form-page">
+    <div class="form-card">
+      <h2>Join as a Fan</h2>
+      <p class="form-footer" style="text-align:left; margin-bottom:1rem;">
+        Create a free account to follow artists and track your favourite music.
+      </p>
+
+      <!-- Inline alert — shown on error or success by fan-register.js -->
+      <div id="form-alert" class="alert" style="display:none;"></div>
+
+      <form id="register-form" novalidate>
+        <div class="form-group">
+          <label for="username">Username</label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            placeholder="e.g. rockfan42"
+            autocomplete="username"
+            required
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input
+            type="email"
+            id="email"
+            name="email"
+            placeholder="you@example.com"
+            autocomplete="email"
+            required
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            placeholder="Min. 8 characters"
+            autocomplete="new-password"
+            minlength="8"
+            required
+          />
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width:100%;">
+          Create Account
+        </button>
+      </form>
+
+      <p class="form-footer" style="margin-top:1rem;">
+        Already have an account?
+        <a href="fan-login.html">Sign in</a>
+      </p>
+      <p class="form-footer">
+        Are you an artist?
+        <a href="artist-register.html">Join as an Artist</a>
+      </p>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/fan-register.js"></script>
+
+</body>
+</html>

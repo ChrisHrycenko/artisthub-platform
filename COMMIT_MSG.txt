@@ -1,0 +1,78 @@
+feat: ArtistHub MVP — full-stack Flask REST API with Docker, CI, and documentation
+
+Implements the complete ArtistHub MVP: a production-conscious REST API platform
+for independent musicians and fans, containerised with Docker and validated by a
+243-test pytest suite at 96% code coverage.
+
+## Backend — Flask REST API
+
+Models (SQLAlchemy ORM, no raw SQL):
+- Artist: email, bcrypt password_hash, display_name, bio, genre, location,
+  profile_image_url, follower_count (dynamic backref COUNT)
+- Fan: email, bcrypt password_hash, unique username
+- MusicRelease: title, release_type (Single/EP/Album/Mixtape/Compilation/Live),
+  genre, description, artwork_url, streaming_url (external link), release_date
+- SocialPost: body (max 2000 chars), optional image_url (external link)
+- MerchProduct: product_name, price (NUMERIC(10,2)), description, image_url,
+  inventory_quantity (NULL=unlimited, 0=out-of-stock, N=available)
+- Follow: UNIQUE(fan_id, artist_id) DB constraint; IntegrityError -> 409
+
+Routes (8 Blueprints, all registered in create_app()):
+- auth:    POST /api/auth/artist/register, /artist/login, /fan/login,
+           /logout; GET /api/auth/me
+- artists: GET/POST /api/artists, GET/PUT /api/artists/<id>,
+           GET /api/artists/<id>/releases|posts|merch|analytics
+- releases: full CRUD at /api/releases[/<id>]
+- posts:   GET/POST /api/posts, GET/DELETE /api/posts/<id>
+- merch:   full CRUD at /api/merch[/<id>]
+- fans:    POST /api/fans/register, GET /api/fans/<id>
+- follows: POST/GET /api/follows, DELETE /api/follows/<artist_id>
+- health:  GET /api/health (app + DB liveness probe)
+
+All responses use success()/error() envelope: { status, data } / { status, error }
+All POST/PUT bodies validated by marshmallow schemas before any DB access
+All mutating routes enforce ownership: abort(403) on current_user.id mismatch
+Flask-Login session cookies: HTTPONLY=True, SAMESITE=Lax
+SECRET_KEY enforced from environment; ProductionConfig raises RuntimeError on default
+
+## Testing
+
+- 243 pytest tests across 9 modules (test_auth, test_artists, test_releases,
+  test_posts, test_merch, test_fans, test_follows, test_health, test_analytics)
+- 96% code coverage (pytest-cov)
+- TestingConfig uses in-memory SQLite; no test touches the development database
+- Fixtures in conftest.py: app, client, artist, fan, artist_client, fan_client
+- CI: GitHub Actions runs flake8 + pytest --cov-fail-under=80 on every push/PR to main
+
+## Docker
+
+- docker/Dockerfile: multi-stage build (deps stage caches pip layer separately
+  from source); python:3.11-slim base; non-root artisthub system user;
+  curl installed for HEALTHCHECK; only gunicorn binary copied from deps stage
+  (not entire /usr/local/bin to avoid interpreter symlink clobbering)
+- docker/docker-compose.yml: backend (gunicorn, internal port 5000) + web
+  (nginx:1.25-alpine, public port 8080); db-data named volume for SQLite
+  persistence; CMD-SHELL healthcheck; start_period=20s
+- docker/nginx.conf: static file server for frontend/; reverse proxy for /api/*
+- .dockerignore: excludes .env, venv/, __pycache__, tests/, *.db, editor noise
+- app/__init__.py: static_folder resolved at runtime with os.path.isdir check;
+  None when frontend/ absent (container) so Flask skips static serving safely
+
+## Documentation
+
+- README.md (986 lines): 17-section professional portfolio README including
+  project overview, business problem, target users, feature set, architecture
+  diagram (Mermaid flowchart), technology stack, full DB schema, complete API
+  reference with curl examples, local installation, Docker (Option A + B),
+  testing, security, roadmap, Enterprise Evolution Roadmap (OpenShift, Kafka,
+  watsonx.ai, watsonx Orchestrate, watsonx.governance — clearly labelled as
+  future architecture), IBM Bob development methodology, contributing guide
+- AGENTS.md: coding standards, project conventions, security requirements,
+  testing requirements enforced across all contributions
+- .env.example: all supported environment variables with descriptions
+- Inline docstrings on every module, class, and function
+
+Co-developed with IBM Bob (AI software engineering assistant):
+architecture planning, code generation, test generation, code review,
+containerisation, and documentation — all changes reviewed and approved
+by the developer before commit.

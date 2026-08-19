@@ -1,0 +1,67 @@
+# .github/workflows/ci.yml
+#
+# ArtistHub CI — runs on every push and pull request to `main`.
+#
+# Jobs:
+#   lint     flake8 on the entire app/ package (PEP 8, max line length 79)
+#   test     pytest with coverage report; fails if coverage < 80%
+#
+# Both jobs run in parallel after the shared `setup` step installs deps.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run flake8
+        run: |
+          cd backend
+          flake8 app
+
+  test:
+    name: Test (pytest + coverage)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pytest with coverage
+        run: |
+          cd backend
+          pytest --cov=app --cov-report=term-missing --cov-fail-under=80 -v

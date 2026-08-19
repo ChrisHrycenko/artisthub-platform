@@ -1,0 +1,1052 @@
+# ArtistHub
+
+> A full-stack REST API platform connecting independent musicians with their fans — built with Python Flask, containerised with Docker, and developed collaboratively with IBM Bob AI.
+
+[![CI](https://github.com/ChrisHrycenko/artisthub-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/ChrisHrycenko/artisthub-platform/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![Flask](https://img.shields.io/badge/Flask-3.0-lightgrey)
+![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)
+![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
+![Docker](https://img.shields.io/badge/Docker-ready-blue)
+
+---
+
+## Table of Contents
+
+1. [Project Overview](#1-project-overview)
+2. [Business Problem](#2-business-problem)
+3. [Target Users](#3-target-users)
+4. [Feature Set](#4-feature-set)
+5. [Screenshots](#5-screenshots)
+6. [Architecture](#6-architecture)
+7. [Technology Stack](#7-technology-stack)
+8. [Database Model](#8-database-model)
+9. [API Reference](#9-api-reference)
+10. [Local Installation](#10-local-installation)
+11. [Docker](#11-docker)
+12. [Testing](#12-testing)
+13. [Security](#13-security)
+14. [Roadmap](#14-roadmap)
+15. [Enterprise Evolution Roadmap](#15-enterprise-evolution-roadmap)
+16. [IBM Bob Development Methodology](#16-ibm-bob-development-methodology)
+17. [Contributing](#17-contributing)
+
+---
+
+## 1. Project Overview
+
+ArtistHub is a **production-ready full-stack MVP** for independent musicians. It combines a Flask REST API backend with a 12-page vanilla HTML/CSS/JS frontend, containerised with Docker behind nginx, and validated by a 243-test pytest suite at 96% code coverage — all developed using IBM Bob as a collaborative AI engineering partner.
+
+The project demonstrates a complete software engineering lifecycle: domain modelling, layered API design, marshmallow-validated request handling, Flask-Login session auth, a fully wired multi-page frontend SPA, multi-stage Docker packaging, GitHub Actions CI, and professional documentation.
+
+---
+
+## 2. Business Problem
+
+Independent musicians face a fragmented landscape: profile management, release distribution, fan communication, and merchandise sales each require separate tools with no common API. Existing platforms are either too broad (generic social networks) or too narrow (pure streaming services).
+
+ArtistHub solves this by providing a **single, unified REST API** that:
+
+- Gives artists one place to publish releases, write posts, and list merchandise.
+- Gives fans one interface to discover artists, follow their activity, and access their catalogue.
+- Exposes a clean `/api/*` contract so any frontend — web, mobile, or third-party — can integrate without re-implementing business logic.
+
+---
+
+## 3. Target Users
+
+| Role | Description | Key Actions |
+|---|---|---|
+| **Artist** | Independent musician with a public profile | Register, publish releases, write posts, list merch, view analytics |
+| **Fan** | Music enthusiast browsing the platform | Register, follow artists, browse releases, read posts, view merch |
+
+The two roles are **separate database models** with separate authentication flows. An artist session and a fan session cannot be confused — Flask-Login's `user_loader` uses a `"artist-<id>"` / `"fan-<id>"` prefix scheme to distinguish them.
+
+---
+
+## 4. Feature Set
+
+### Artist Features
+- **Profile management** — display name, bio, genre, location, profile image URL
+- **Music releases** — create, update, delete releases; types: Single / EP / Album / Mixtape / Compilation / Live; optional streaming URL (links to Spotify, SoundCloud, Bandcamp, etc.)
+- **Social posts** — publish short-form updates (up to 2 000 characters) with optional image links
+- **Merchandise listings** — list products with price (`NUMERIC(10,2)`), description, image URL, and optional inventory tracking
+- **Analytics** — follower count, release count, post count, merch count per artist
+
+### Fan Features
+- **Registration and authentication** — unique username + email, bcrypt-hashed passwords
+- **Follow / unfollow** — subscribe to an artist's content; `UNIQUE(fan_id, artist_id)` constraint prevents duplicates, returns `409` on conflict
+- **Discover artists** — paginated artist directory
+- **Browse catalogue** — paginated release and merch listings with optional genre filter
+
+### Platform Features
+- **Consistent JSON envelope** — every response is `{ "status": "success", "data": {...} }` or `{ "status": "error", "error": "..." }`
+- **Paginated list endpoints** — all collection endpoints accept `?page=` and `?per_page=` (capped at 50)
+- **Health check endpoint** — `GET /api/health` probes app status and database connectivity; used by Docker and load balancers
+- **Multi-stage Docker image** — non-root user, no secrets baked in, gunicorn production server, curl-based `HEALTHCHECK`
+- **GitHub Actions CI** — lint (`flake8`) + test (`pytest --cov`) on every push and PR to `main`
+
+---
+
+## 5. Screenshots
+
+> The frontend SPA (Phase 4) is complete. Replace the placeholders below with real screenshots by opening the app via `docker-compose up` and capturing each page.
+
+| View | Preview |
+|---|---|
+| Artist Profile | `[ screenshot: artist-profile.png ]` |
+| Artist Dashboard (releases + merch management) | `[ screenshot: artist-dashboard.png ]` |
+| Music Releases Browse | `[ screenshot: releases-browse.png ]` |
+| Fan Dashboard (following list + feed) | `[ screenshot: fan-dashboard.png ]` |
+| Merch Listing | `[ screenshot: merch-listing.png ]` |
+
+---
+
+## 6. Architecture
+
+```mermaid
+flowchart TD
+    %% ── Source Control ─────────────────────────────────────────────
+    GH["☁ GitHub\nSource Control\n(git push / PR / CI)"]
+
+    %% ── Packaging ───────────────────────────────────────────────────
+    subgraph DOCKER["🐳  Docker"]
+        direction TB
+
+        subgraph NGINX_BOX["nginx container  (port 8080)"]
+            NGINX["nginx\nStatic file server\n+ Reverse proxy"]
+        end
+
+        subgraph FLASK_BOX["Flask/gunicorn container  (port 5000)"]
+            direction TB
+            ROUTES["Flask REST API\n/api/*\n(8 Blueprints)"]
+
+            subgraph SERVICES["Application Services"]
+                AUTH["auth\n/api/auth/*"]
+                ARTISTS["artists\n/api/artists/*"]
+                RELEASES["releases\n/api/releases/*"]
+                POSTS["posts\n/api/posts/*"]
+                MERCH["merch\n/api/merch/*"]
+                FANS["fans\n/api/fans/*"]
+                FOLLOWS["follows\n/api/follows/*"]
+                HEALTH["health\n/api/health"]
+            end
+
+            MARSHMALLOW["marshmallow\nInput Validation"]
+            SQLALCHEMY["Flask-SQLAlchemy\nORM"]
+
+            subgraph MODELS["Models"]
+                direction LR
+                ARTIST_M["Artist"]
+                FAN_M["Fan"]
+                RELEASE_M["MusicRelease"]
+                POST_M["SocialPost"]
+                MERCH_M["MerchProduct"]
+                FOLLOW_M["Follow"]
+            end
+        end
+
+        DB[("SQLite\nartisthub.db\n(named volume)")]
+    end
+
+    %% ── Clients ─────────────────────────────────────────────────────
+    ARTIST_U(["🎸 Artist\n(browser)"])
+    FAN_U(["🎧 Fan\n(browser)"])
+
+    %% ── Connections ─────────────────────────────────────────────────
+    GH -->|"build image\n(CI / docker build)"| DOCKER
+
+    ARTIST_U -->|"HTTPS request"| NGINX
+    FAN_U    -->|"HTTPS request"| NGINX
+
+    NGINX -->|"static files\n(HTML/CSS/JS)"| ARTIST_U
+    NGINX -->|"static files\n(HTML/CSS/JS)"| FAN_U
+    NGINX -->|"proxy /api/*"| ROUTES
+
+    ROUTES --> MARSHMALLOW
+    MARSHMALLOW --> SERVICES
+    SERVICES --> SQLALCHEMY
+    SQLALCHEMY --> MODELS
+    MODELS <-->|"ORM read/write"| DB
+
+    ROUTES -->|"JSON response\n{ status, data }"| NGINX
+```
+
+### Request / Response Flow
+
+Every browser request travels the following path:
+
+1. **Browser → nginx** — nginx is the sole public entry point (port 8080). Static assets (`*.html`, `*.css`, `*.js`) are served directly from the `frontend/` volume; no Flask involvement.
+2. **nginx → Flask** — Paths matching `/api/*` are proxied to the Flask/gunicorn container on the internal Docker network. nginx forwards `Host`, `X-Real-IP`, `X-Forwarded-For`, and the session `Cookie`.
+3. **Flask routing** — gunicorn dispatches to the Blueprint that owns the matched route. Flask-Login validates the session cookie on protected routes and returns `401` for unauthenticated requests.
+4. **marshmallow validation** — Every `POST`/`PUT` body is validated against a schema before any database access. Failures return `400` immediately.
+5. **Business logic + ownership check** — Route handlers verify `resource.owner_id == current_user.id` before any mutation, calling `abort(403)` on failure.
+6. **SQLAlchemy ORM → SQLite** — All DB access goes through the ORM; no raw SQL. The database file is stored in a named Docker volume (`ah-db`), persisting across restarts.
+7. **Response envelope** — Every route returns via `success()` / `error()` from `app/utils/responses.py`, producing a consistent `{ "status", "data" | "error" }` envelope.
+8. **Source control loop** — GitHub Actions runs `flake8` + `pytest --cov` on every push to `main`, gating merges on green CI.
+
+---
+
+## 7. Technology Stack
+
+| Layer | Technology | Rationale |
+|---|---|---|
+| **Language** | Python 3.11 | Type hints, `match`, `str \| None` — modern, well-supported LTS |
+| **Web framework** | Flask 3.0 | Lightweight, explicit routing, no magic; ideal for a JSON API |
+| **WSGI server** | gunicorn 22 | Production-grade multi-worker server; never use `flask run` in production |
+| **Authentication** | Flask-Login 0.6 | Session-cookie auth; `UserMixin`; role-differentiated `user_loader` |
+| **Password hashing** | Flask-Bcrypt 1.0 | bcrypt cost factor; never store or log plain-text passwords |
+| **ORM** | Flask-SQLAlchemy 3.1 | Declarative models; no raw SQL; one-line switch to PostgreSQL |
+| **Migrations** | Flask-Migrate 4.0 (Alembic) | Version-controlled schema changes; `flask db upgrade` in production |
+| **Validation** | marshmallow 3.21 | Schema-first validation; separates input parsing from business logic |
+| **CORS** | Flask-CORS 4.0 | Origin-restricted; `credentials: "include"` for session cookies |
+| **Database** | SQLite (dev/MVP) → PostgreSQL (prod) | Single `DATABASE_URL` env var swap; no code changes required |
+| **Containerisation** | Docker + nginx 1.25 | Multi-stage image; non-root user; named volume for DB persistence |
+| **CI** | GitHub Actions | `flake8` lint + `pytest --cov` on every push and PR to `main` |
+| **Testing** | pytest 8.2 + pytest-cov | 243 tests, 96% coverage; in-memory SQLite for fast, isolated runs |
+| **Linting** | flake8 7.1 | PEP 8 enforcement; zero warnings required before merge |
+
+---
+
+## 8. Database Model
+
+```
+artist
+├── id                INTEGER  PK  auto-increment
+├── email             VARCHAR(255)  UNIQUE  NOT NULL
+├── password_hash     VARCHAR(255)  NOT NULL         ← bcrypt, never exposed in API
+├── display_name      VARCHAR(100)  NOT NULL
+├── bio               TEXT          nullable
+├── profile_image_url VARCHAR(500)  nullable
+├── genre             VARCHAR(100)  nullable
+├── location          VARCHAR(100)  nullable
+└── created_at        DATETIME      NOT NULL  default=utcnow
+
+fan
+├── id                INTEGER  PK  auto-increment
+├── email             VARCHAR(255)  UNIQUE  NOT NULL
+├── password_hash     VARCHAR(255)  NOT NULL         ← bcrypt, never exposed in API
+├── username          VARCHAR(100)  UNIQUE  NOT NULL
+└── created_at        DATETIME      NOT NULL  default=utcnow
+
+music_release
+├── id                INTEGER  PK  auto-increment
+├── artist_id         INTEGER  FK → artist.id  ON DELETE CASCADE  indexed
+├── title             VARCHAR(200)  NOT NULL
+├── release_type      VARCHAR(50)   NOT NULL  default="Single"
+│                     (Single | EP | Album | Mixtape | Compilation | Live)
+├── genre             VARCHAR(100)  nullable
+├── description       TEXT          nullable
+├── artwork_url       VARCHAR(500)  nullable
+├── streaming_url     VARCHAR(500)  nullable         ← external link only
+├── release_date      DATE          nullable
+└── created_at        DATETIME      NOT NULL  default=utcnow
+
+social_post
+├── id                INTEGER  PK  auto-increment
+├── artist_id         INTEGER  FK → artist.id  ON DELETE CASCADE  indexed
+├── body              VARCHAR(2000)  NOT NULL
+├── image_url         VARCHAR(500)   nullable        ← external link only
+└── created_at        DATETIME       NOT NULL  default=utcnow
+
+merch_product
+├── id                   INTEGER  PK  auto-increment
+├── artist_id            INTEGER  FK → artist.id  ON DELETE CASCADE  indexed
+├── product_name         VARCHAR(200)   NOT NULL
+├── description          TEXT           nullable
+├── price                NUMERIC(10,2)  NOT NULL     ← never Float; avoids rounding errors
+├── image_url            VARCHAR(500)   nullable     ← external link only
+├── inventory_quantity   INTEGER        nullable
+│                        (NULL=unlimited, 0=out-of-stock, N=available units)
+└── created_at           DATETIME       NOT NULL  default=utcnow
+
+follow
+├── id                INTEGER  PK  auto-increment
+├── fan_id            INTEGER  FK → fan.id     ON DELETE CASCADE  indexed
+├── artist_id         INTEGER  FK → artist.id  ON DELETE CASCADE  indexed
+└── created_at        DATETIME  NOT NULL  default=utcnow
+    UNIQUE(fan_id, artist_id)  ← DB-level constraint; IntegrityError → 409
+```
+
+**Key design decisions:**
+- `Artist` and `Fan` are **separate tables** — no single shared user table. This avoids a `role` column and the nullable-field explosion that comes with it.
+- All `artist_id` foreign keys have `ON DELETE CASCADE` — deleting an artist atomically removes their releases, posts, merch, and follows.
+- `price` uses `NUMERIC(10,2)`, not `FLOAT` — floating-point arithmetic must never be applied to currency values.
+- `inventory_quantity = NULL` means unlimited/not tracked; `0` means out of stock. This avoids a boolean + integer pair.
+- Switching to **PostgreSQL** requires only changing `DATABASE_URL` in `.env` — no ORM code changes.
+
+---
+
+## 9. API Reference
+
+All endpoints are prefixed `/api`. All request and response bodies are `application/json`. Every response uses the envelope:
+
+```
+Success → { "status": "success", "data": { ... } }
+Error   → { "status": "error",   "error": "Human-readable message" }
+```
+
+### Authentication
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/auth/artist/register` | Public | Register a new artist account |
+| `POST` | `/api/auth/artist/login` | Public | Artist login — sets session cookie |
+| `POST` | `/api/auth/fan/login` | Public | Fan login — sets session cookie |
+| `POST` | `/api/auth/logout` | Required | Clear the current session |
+| `GET` | `/api/auth/me` | Required | Return current user id + role |
+
+### Artists
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/artists` | Public | Paginated artist directory |
+| `GET` | `/api/artists/<id>` | Public | Single artist profile |
+| `POST` | `/api/artists` | Artist | Create / complete own profile |
+| `PUT` | `/api/artists/<id>` | Artist (owner) | Update own profile |
+| `GET` | `/api/artists/<id>/releases` | Public | Artist's releases, paginated |
+| `GET` | `/api/artists/<id>/posts` | Public | Artist's posts, paginated |
+| `GET` | `/api/artists/<id>/merch` | Public | Artist's merch, paginated |
+| `GET` | `/api/artists/<id>/analytics` | Public | Follower, release, post, merch counts |
+
+### Releases
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/releases` | Public | All releases, paginated; `?genre=` filter |
+| `GET` | `/api/releases/<id>` | Public | Single release |
+| `POST` | `/api/releases` | Artist | Create a release |
+| `PUT` | `/api/releases/<id>` | Artist (owner) | Update own release |
+| `DELETE` | `/api/releases/<id>` | Artist (owner) | Delete own release |
+
+### Posts
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/posts` | Public | Global post feed, newest-first, paginated |
+| `GET` | `/api/posts/<id>` | Public | Single post |
+| `POST` | `/api/posts` | Artist | Publish a post |
+| `DELETE` | `/api/posts/<id>` | Artist (owner) | Delete own post |
+
+### Merchandise
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/merch` | Public | All products, paginated |
+| `GET` | `/api/merch/<id>` | Public | Single product |
+| `POST` | `/api/merch` | Artist | Create a product listing |
+| `PUT` | `/api/merch/<id>` | Artist (owner) | Update own listing |
+| `DELETE` | `/api/merch/<id>` | Artist (owner) | Delete own listing |
+
+### Fans
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/fans/register` | Public | Register a new fan account |
+| `GET` | `/api/fans/<id>` | Public | Fan profile |
+
+### Follows
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/follows` | Fan | Follow an artist |
+| `DELETE` | `/api/follows/<artist_id>` | Fan | Unfollow an artist |
+| `GET` | `/api/follows` | Fan | List artists the fan follows |
+
+### Health
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/health` | Public | App + database liveness probe |
+
+---
+
+### Example: Register an Artist
+
+```bash
+curl -s -X POST http://localhost:5000/api/auth/artist/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "nova@example.com",
+    "password": "securepass123",
+    "display_name": "Nova Beats",
+    "genre": "Electronic",
+    "location": "Toronto, ON"
+  }' | python3 -m json.tool
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "artist": {
+      "id": 1,
+      "email": "nova@example.com",
+      "display_name": "Nova Beats",
+      "bio": null,
+      "profile_image_url": null,
+      "genre": "Electronic",
+      "location": "Toronto, ON",
+      "created_at": "2024-01-15T10:30:00",
+      "role": "artist",
+      "follower_count": 0
+    }
+  }
+}
+```
+
+### Example: Publish a Release
+
+```bash
+curl -s -X POST http://localhost:5000/api/releases \
+  -H "Content-Type: application/json" \
+  -b "session=<cookie>" \
+  -d '{
+    "title": "Midnight Protocol",
+    "release_type": "EP",
+    "genre": "Electronic",
+    "streaming_url": "https://soundcloud.com/novabeats/midnight-protocol"
+  }' | python3 -m json.tool
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "release": {
+      "id": 1,
+      "artist_id": 1,
+      "title": "Midnight Protocol",
+      "release_type": "EP",
+      "genre": "Electronic",
+      "description": null,
+      "artwork_url": null,
+      "streaming_url": "https://soundcloud.com/novabeats/midnight-protocol",
+      "release_date": null,
+      "created_at": "2024-01-15T10:35:00"
+    }
+  }
+}
+```
+
+### Example: Fan Follows an Artist
+
+```bash
+curl -s -X POST http://localhost:5000/api/follows \
+  -H "Content-Type: application/json" \
+  -b "session=<fan-cookie>" \
+  -d '{ "artist_id": 1 }' | python3 -m json.tool
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "follow": {
+      "id": 1,
+      "fan_id": 7,
+      "artist_id": 1,
+      "created_at": "2024-01-15T11:00:00"
+    }
+  }
+}
+```
+
+### Example: Health Check
+
+```bash
+curl -s http://localhost:5000/api/health | python3 -m json.tool
+```
+
+```json
+{
+  "status": "success",
+  "data": {
+    "app": "ArtistHub",
+    "status": "ok",
+    "environment": "development",
+    "database": "ok"
+  }
+}
+```
+
+---
+
+## 10. Local Installation
+
+### Prerequisites
+
+- Python 3.11+ — [python.org/downloads](https://www.python.org/downloads/)
+- pip (bundled with Python 3.11+)
+- git
+
+```bash
+python3 --version   # ≥ 3.11
+pip3 --version
+git --version
+```
+
+### Steps
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/ChrisHrycenko/artisthub-platform.git
+cd artisthub-platform
+```
+
+**2. Create and activate a virtual environment**
+
+```bash
+# macOS / Linux
+python3 -m venv venv
+source venv/bin/activate
+
+# Windows (PowerShell)
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+**3. Install dependencies**
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+# Includes pytest, pytest-cov, and flake8 on top of requirements.txt
+```
+
+**4. Configure environment variables**
+
+```bash
+# From the repo root
+cp .env.example .env
+```
+
+Generate a secure `SECRET_KEY` and add it to `.env`:
+
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+Minimum `.env` for local development:
+
+```
+SECRET_KEY=<paste-generated-key-here>
+FLASK_ENV=development
+```
+
+**5. Start the development server**
+
+```bash
+# From backend/
+python run.py
+```
+
+The API is now available at **http://127.0.0.1:5000**
+
+**6. Verify the health endpoint**
+
+```bash
+curl -s http://127.0.0.1:5000/api/health | python3 -m json.tool
+```
+
+**7. Open the frontend**
+
+In development mode the Flask server also serves the `frontend/` directory as static files (the `static_folder` is resolved relative to `app/__init__.py`). Open your browser at:
+
+```
+http://127.0.0.1:5000/index.html
+```
+
+Or use the **Docker Option B** (see Section 11) to run the full nginx + backend stack and open `http://localhost:8080`.
+
+---
+
+### Frontend Structure
+
+```
+frontend/
+├── index.html                  Home page — hero, feature cards
+├── browse-artists.html         Paginated artist directory
+├── browse-releases.html        Releases with genre filter
+├── browse-posts.html           Global social feed
+├── browse-merch.html           Merchandise catalogue
+├── artist-profile.html         Public artist profile (releases, posts, merch)
+├── artist-register.html        Artist registration form
+├── artist-login.html           Artist sign-in form
+├── artist-dashboard.html       Artist CMS — profile, posts, releases, merch
+├── artist-analytics.html       Follower / content count analytics
+├── fan-register.html           Fan registration form
+├── fan-login.html              Fan sign-in form
+├── fan-dashboard.html          Fan home — followed artists + post feed
+├── css/
+│   ├── reset.css               Minimal CSS reset
+│   └── main.css                Design system (variables, layout, components)
+└── js/
+    ├── api.js                  Central fetch wrapper — all HTTP calls go here
+    ├── auth.js                 Session probe + nav state; runs on every page
+    ├── browse.js               Shared pagination + card rendering utilities
+    ├── browse-artists.js       Artist directory logic
+    ├── browse-releases.js      Release browse + genre filter
+    ├── browse-posts.js         Social feed logic
+    ├── browse-merch.js         Merch browse logic
+    ├── artist-profile.js       Profile page + Follow/Unfollow button
+    ├── artist-register.js      Registration form handler
+    ├── artist-login.js         Login form handler
+    ├── artist-dashboard.js     Dashboard CMS — profile, posts, releases, merch CRUD
+    ├── artist-analytics.js     Analytics display
+    ├── fan-register.js         Fan registration handler
+    ├── fan-login.js            Fan login handler
+    └── fan-dashboard.js        Fan dashboard — following list + feed
+```
+
+**Design principles:** No frameworks, no CDN imports, no build step. All HTTP calls go through `window.api` (api.js) with `credentials: "include"`. All user-supplied strings are passed through `escapeHtml()` before `innerHTML` insertion.
+
+---
+
+## 11. Docker
+
+### Docker files
+
+| File | Purpose |
+|---|---|
+| `docker/Dockerfile` | Multi-stage build — deps layer cached separately from source |
+| `docker/docker-compose.yml` | Full stack: `backend` (gunicorn, port 5000 internal) + `web` (nginx, port 8080) |
+| `docker/nginx.conf` | Serves `frontend/` static files; reverse-proxies `/api/*` to Flask |
+| `.dockerignore` | Excludes `.env`, `venv/`, `__pycache__`, `tests/`, `*.db` from the build context |
+
+### Image security properties
+
+- **No secrets baked in** — `.dockerignore` blocks `.env`; credentials are injected at runtime via `--env-file`
+- **Non-root process** — runs as the `artisthub` system user
+- **Minimal surface** — only `curl` added to `python:3.11-slim`; no shell tooling, no package manager
+- **Safe layer caching** — `requirements.txt` is copied before source; pip only re-runs on dependency changes
+- **Targeted binary copy** — only `gunicorn` is copied from the deps stage, not the entire `/usr/local/bin`
+
+---
+
+### Option A — Backend only (`docker run`)
+
+```bash
+# 1. Prepare .env
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_hex(32))"
+# paste output as SECRET_KEY in .env
+
+# 2. Build (run from repo root)
+docker build -f docker/Dockerfile -t artisthub-backend .
+
+# 3. Run
+docker run --rm \
+  --env-file .env \
+  -v ah-db:/app/instance \
+  -p 5000:5000 \
+  --name artisthub \
+  artisthub-backend
+
+# 4. Test health endpoint
+curl -s http://localhost:5000/api/health | python3 -m json.tool
+# Expected response:
+# {
+#   "data": { "app": "ArtistHub", "database": "ok", "environment": "...", "status": "ok" },
+#   "status": "success"
+# }
+
+# 5. Test a public API route
+curl -s "http://localhost:5000/api/artists?page=1&per_page=3" | python3 -m json.tool
+
+# 6. Stop
+docker stop artisthub
+```
+
+> **Note:** If `.env` sets `FLASK_ENV=production`, the container will refuse to start with the
+> default `SECRET_KEY` placeholder — `ProductionConfig` raises a `RuntimeError` at boot. Always
+> generate a real key before running in production mode.
+
+| Flag | Purpose |
+|---|---|
+| `--env-file .env` | Injects secrets at runtime — never baked into the image |
+| `-v ah-db:/app/instance` | Named volume persists the SQLite DB across restarts |
+| `-p 5000:5000` | Exposes gunicorn to the host |
+| `--rm` | Auto-removes the container on stop |
+
+---
+
+### Option B — Full stack (`docker-compose`)
+
+Starts Flask/gunicorn **and** nginx, with nginx serving both the static frontend and the `/api/*` proxy.
+
+> **Prerequisite:** The `.env` file is **mandatory**. `docker-compose.yml` enforces `FLASK_ENV=production`, which activates `ProductionConfig`. That config raises a `RuntimeError` at startup if `SECRET_KEY` is absent or still the default placeholder.
+
+```bash
+# 1. Prepare .env (mandatory — see above)
+cp .env.example .env
+python3 -c "import secrets; print(secrets.token_hex(32))"
+# paste as SECRET_KEY in .env
+
+# 2. Start
+docker-compose -f docker/docker-compose.yml up --build
+
+# 3. Verify
+curl -s http://localhost:8080/api/health | python3 -m json.tool
+# Frontend: http://localhost:8080
+
+# 4. Stop
+docker-compose -f docker/docker-compose.yml down
+
+# Remove DB volume too
+docker-compose -f docker/docker-compose.yml down -v
+```
+
+### Useful commands
+
+```bash
+docker ps                              # running containers
+docker logs -f artisthub               # tail logs
+docker exec -it artisthub /bin/sh      # debug shell (non-root, no bash)
+docker rmi artisthub-backend           # force full rebuild on next run
+docker volume ls                       # list named volumes
+docker inspect artisthub | grep Health # check HEALTHCHECK status
+```
+
+### Switching to PostgreSQL
+
+No code changes needed. Add to `.env`:
+
+```
+DATABASE_URL=postgresql://user:password@host:5432/artisthub
+```
+
+---
+
+## 12. Testing
+
+All tests run from `backend/`. The test suite uses an in-memory SQLite database (`TestingConfig`) — no test ever touches the development database.
+
+### Run the full suite
+
+```bash
+cd backend
+pytest --cov=app -v
+```
+
+### Run a single module
+
+```bash
+pytest tests/test_releases.py -v
+```
+
+### Run a single test
+
+```bash
+pytest tests/test_follows.py::TestFollowArtist::test_duplicate_follow_returns_409 -v
+```
+
+### Run the linter
+
+```bash
+flake8 app   # must produce zero output
+```
+
+### Coverage summary
+
+| Module | Coverage |
+|---|---|
+| `routes/` | 95–100% |
+| `models/` | 93–95% |
+| `utils/` | 100% |
+| `schemas/` | 97–100% |
+| **Total** | **96%** |
+
+### CI
+
+GitHub Actions runs `flake8` and `pytest --cov --cov-fail-under=80` on every push and pull request to `main`. A red CI gate blocks merging.
+
+---
+
+## 13. Security
+
+| Concern | Implementation |
+|---|---|
+| **Password storage** | bcrypt via `flask-bcrypt`; `password_hash` is never returned in any API response or logged |
+| **Session cookies** | `SESSION_COOKIE_HTTPONLY=True` (no JS access); `SESSION_COOKIE_SAMESITE="Lax"` (CSRF mitigation) |
+| **Secret key** | `SECRET_KEY` loaded from environment variable only; `ProductionConfig.__init__()` raises `RuntimeError` if the default placeholder is detected at startup |
+| **Input validation** | Every `POST`/`PUT` body validated by a marshmallow schema before any DB access; validation errors return `400` |
+| **Ownership enforcement** | Every mutating route checks `resource.owner_id == current_user.id`; failure calls `abort(403)` (never a manual JSON response) |
+| **SQL injection** | Flask-SQLAlchemy ORM used exclusively; no raw SQL strings anywhere in the codebase |
+| **CORS** | `Flask-CORS` restricted to configured origins (`CORS_ORIGINS`); `supports_credentials=True` for session cookie passing |
+| **Secrets in Docker** | `.env` is in `.dockerignore`; the image contains no credentials; secrets are injected at runtime via `--env-file` |
+| **Non-root container** | The gunicorn process runs as the `artisthub` system user, not `root` |
+| **Duplicate follow** | `UNIQUE(fan_id, artist_id)` DB constraint is the authoritative guard; `IntegrityError` is caught and surfaced as `409` |
+
+---
+
+## 14. Roadmap
+
+| Phase | Description | Status |
+|---|---|---|
+| 1 | Project skeleton, app factory, auth models, `/api/health` | ✅ Complete |
+| 2 | Artist CRUD — releases, posts, merch, analytics | ✅ Complete |
+| 3 | Fan features — follows, simulated orders | ✅ Complete |
+| 4 | Frontend SPA — 12 pages (HTML/CSS/JS, api.js wrapper, artist + fan flows) | ✅ Complete |
+| 5 | Docker packaging + GitHub Actions CI | ✅ Complete |
+| 6 | `v0.1.0` MVP tag, PostgreSQL migration guide | 🔜 Planned |
+| 7 | Real payment integration (Stripe PaymentIntents) | 🔜 Future |
+| 8 | OpenShift deployment + IBM watsonx anomaly detection | 🔜 Future |
+
+---
+
+## 15. Enterprise Evolution Roadmap
+
+> ⚠️ **Future Architecture — not currently implemented.** This section describes a conceptual evolution of ArtistHub from its current MVP state onto enterprise IBM and Red Hat infrastructure. No Kafka brokers, OpenShift clusters, or watsonx services exist in the codebase today. The purpose of this section is to demonstrate how the architectural decisions made in the MVP — a clean REST API contract, environment-variable-driven configuration, container-native packaging — create a tractable path to enterprise scale.
+
+---
+
+### Current State
+
+ArtistHub today is a containerised Flask REST API: a single Docker container serving gunicorn behind nginx, with SQLite for persistence. The architecture is intentionally minimal and correct for proving the domain model and API contract at MVP stage.
+
+Its constraints are equally clear: a single container cannot scale horizontally, SQLite is not suitable for high-concurrency writes, there is no event streaming, no ML-driven personalisation, and no AI governance. Each layer below addresses one of those constraints.
+
+---
+
+### Layer 1 — Container Orchestration: Red Hat OpenShift
+
+**Red Hat OpenShift** is an enterprise Kubernetes distribution that adds integrated CI/CD (OpenShift Pipelines / Tekton), RBAC, built-in security policies, and a developer console on top of upstream Kubernetes. It is available on-premises, in IBM Cloud, AWS, Azure, and GCP — making it the natural foundation for hybrid-cloud deployments.
+
+**Why it follows from the current design:** The existing `docker/Dockerfile` is already the unit of deployment. Moving to OpenShift means converting `docker-compose.yml` service definitions into Kubernetes `Deployment` and `Service` manifests. Nothing in the Flask application changes — `DATABASE_URL` and `SECRET_KEY` are already injected as environment variables; OpenShift Secrets replace the `.env` file.
+
+**Capabilities unlocked:**
+
+| Capability | OpenShift mechanism |
+|---|---|
+| Horizontal scaling | `HorizontalPodAutoscaler` on CPU or request latency |
+| Zero-downtime deploys | Rolling update strategy on the backend `Deployment` |
+| Automated TLS | cert-manager + Let's Encrypt; Ingress terminates HTTPS |
+| Hybrid-cloud portability | Multi-cluster federation; workloads run identically on-prem and in IBM Cloud |
+| Supply-chain security | OpenShift Pipelines builds and signs the image; only signed images are deployable |
+| Secrets management | OpenShift Secrets or HashiCorp Vault; `.env` files are never used in production |
+| Observability | Prometheus + Grafana built in; `GET /api/health` becomes the pod liveness probe |
+
+**Migration from the current Dockerfile — no application code changes required:**
+
+```
+# Today
+docker-compose -f docker/docker-compose.yml up --build
+
+# On OpenShift
+oc apply -f openshift/manifests/
+oc start-build artisthub-backend
+```
+
+---
+
+### Layer 2 — Event Streaming: Confluent / Apache Kafka
+
+**Apache Kafka** is a distributed, durable event log. **Confluent** is the enterprise distribution, adding Schema Registry, managed connectors, and a cloud-hosted option (Confluent Cloud). Every meaningful user action on ArtistHub is an event. Today those actions produce only a database write. With Kafka, each action also emits an immutable event record that any number of downstream services can consume independently — without coupling to or querying the primary Flask application.
+
+**Planned event topology:**
+
+| Kafka topic | Producing route | Payload |
+|---|---|---|
+| `artisthub.follows` | `POST /api/follows` | `{ fan_id, artist_id, timestamp }` |
+| `artisthub.releases.created` | `POST /api/releases` | `{ release_id, artist_id, genre, timestamp }` |
+| `artisthub.posts.created` | `POST /api/posts` | `{ post_id, artist_id, timestamp }` |
+| `artisthub.merch.purchased` | `POST /api/orders` (Phase 7) | `{ order_id, fan_id, artist_id, item_type, total_price, timestamp }` |
+| `artisthub.plays` | Frontend beacon (Phase 4) | `{ fan_id, release_id, artist_id, duration_seconds, timestamp }` |
+
+**Integration pattern:** Each producing route calls a thin `emit_event(topic, payload)` helper after the database commit. The helper is a fire-and-forget Kafka producer (e.g. `confluent-kafka-python`). If the broker is unavailable the event is dropped — the primary write has already succeeded and the HTTP response is unaffected.
+
+**Planned consumers:**
+
+- **Real-time analytics** — consumes `artisthub.follows` and `artisthub.plays` to maintain live counters for a streaming dashboard.
+- **Recommendation engine** — builds a fan interest graph from play and follow events; feeds the watsonx.ai model described in Layer 3.
+- **Notification service** — consumes `artisthub.releases.created`, resolves the artist's follower list, and dispatches release alerts.
+- **Data warehouse sink** — Confluent JDBC sink connector streams all topics into IBM Db2 Warehouse or BigQuery for historical analytics and model training.
+
+**Schema governance:** All event schemas are registered in Confluent Schema Registry (Avro or Protobuf). Producers cannot publish a schema-breaking event without a registry approval, preventing silent downstream breakage.
+
+---
+
+### Layer 3 — AI and Analytics: IBM watsonx.ai
+
+**IBM watsonx.ai** is IBM's enterprise AI studio: foundation model access, fine-tuning pipelines, and model deployment on IBM Cloud and on-premises via OpenShift AI. ArtistHub accumulates rich behavioural data — play history, follow graphs, post engagement, genre preferences — that is currently unused beyond simple counts. watsonx.ai would transform that data into personalised, intelligent experiences.
+
+**Planned capabilities:**
+
+#### Artist Analytics and Trend Intelligence
+A time-series model trained on `artisthub.plays` and `artisthub.follows` Kafka events would extend the existing `GET /api/artists/<id>/analytics` endpoint to return:
+- Audience growth rate and trajectory forecasts
+- Genre affinity scores across the fan base
+- Optimal release timing recommendations based on historical engagement patterns
+- Follower velocity anomaly detection (organic growth vs. coordinated bot activity)
+
+The Flask route would call a watsonx.ai inference endpoint and pass the result through the existing `success()` envelope — no change to the API contract.
+
+#### Fan Recommendations
+A collaborative filtering model (or a fine-tuned Granite foundation model) trained on the fan interest graph would power two new endpoints:
+- `GET /api/recommendations/releases` — personalised release feed ranked by predicted affinity
+- `GET /api/recommendations/artists` — artist discovery ranked by similarity to followed artists
+
+#### AI-Assisted Content
+Foundation models accessed via watsonx.ai would provide optional creative assistance to artists:
+- **Bio drafting** — artist provides bullet points; model returns a polished profile bio for review
+- **Post drafting** — given a new release, the model suggests a social post announcing it
+- **Release description generation** — model writes a description from title, genre, and tracklist
+
+These would be thin `POST /api/ai/*` routes that proxy to the watsonx.ai prompt API. The artist always reviews and edits the output before it is published — the model assists, it does not publish autonomously.
+
+---
+
+### Layer 4 — Business Workflow Automation: IBM watsonx Orchestrate
+
+**IBM watsonx Orchestrate** is an AI-powered automation platform that lets users define and run multi-step business workflows using natural language, connecting to enterprise systems through a library of pre-built and custom skills.
+
+**Why it fits ArtistHub:** Independent artists are sole traders managing their own business operations alongside creative work. Orchestrate would reduce that overhead by automating repeatable workflows triggered by platform events.
+
+**Planned workflows:**
+
+| Workflow | Trigger | Automated steps |
+|---|---|---|
+| **Release campaign** | Artist publishes a release | Draft post via watsonx.ai → artist approves → publish to feed → email newsletter to followers → schedule follow-up post |
+| **Merch restock alert** | `inventory_quantity` reaches 0 | Email artist → draft a "back in stock" post → log stockout event to the data warehouse |
+| **Monthly analytics digest** | Scheduled (1st of month) | Fetch analytics from watsonx.ai → generate natural-language summary → email digest to artist |
+| **Follower milestone** | Count crosses 1 000 / 10 000 | Notify artist → draft a thank-you post → log milestone event |
+
+Orchestrate connects to ArtistHub via a custom skill backed by the existing REST API — calling `POST /api/posts`, `GET /api/artists/<id>/analytics`, and similar endpoints using the artist's session credentials. **No changes to the Flask application are required** to support Orchestrate integration.
+
+---
+
+### Layer 5 — AI Governance: IBM watsonx.governance
+
+**IBM watsonx.governance** is an AI risk and compliance platform that monitors deployed models for bias, drift, explainability, and regulatory compliance. It integrates natively with watsonx.ai and with third-party ML platforms.
+
+**Why governance is non-negotiable for ArtistHub:** Any recommendation model deployed in production carries risks that must be managed continuously, not just at training time:
+
+- **Popularity bias** — a model trained on play counts will systematically under-recommend new or niche artists, reinforcing the success of already-popular acts and suppressing emerging voices. This directly contradicts ArtistHub's purpose.
+- **Demographic fairness** — if training data over-represents certain genres or regions, the model may surface systematically worse recommendations for artists from under-represented backgrounds.
+- **Silent model drift** — user behaviour changes over time; a model accurate at training time degrades without continuous monitoring.
+
+**Planned governance controls:**
+
+| Control | watsonx.governance mechanism |
+|---|---|
+| Bias detection | Fairness metrics computed per protected attribute (genre, artist location); alert when disparity exceeds threshold |
+| Drift monitoring | Statistical tests on input feature distributions vs. training baseline; automated retraining trigger |
+| Explainability | SHAP values surfaced alongside recommendations so artists understand why a fan was or was not recommended to them |
+| Immutable audit trail | Every model version, evaluation result, and deployment decision logged for regulatory review |
+| Human oversight gate | No model is promoted to production without a governance review approval — a human signs off on the evaluation report |
+
+**Feedback loop:** Each inference call to watsonx.ai passes a `transaction_id`. watsonx.governance correlates that ID with the recommendation served, the user who received it, and any downstream action (did the fan follow the recommended artist?). This closes the evaluation loop for continuous model quality assessment.
+
+---
+
+### Architectural Evolution Summary
+
+The table below maps every current constraint to its enterprise resolution. The right column represents the target state — not the current state.
+
+| Dimension | Current MVP | Enterprise Target |
+|---|---|---|
+| Deployment | Docker Compose, single host | Red Hat OpenShift, multi-cluster hybrid cloud |
+| Database | SQLite, file-based | PostgreSQL on OpenShift (HA, replicated) |
+| TLS / ingress | nginx, HTTP only | OpenShift Ingress + cert-manager (HTTPS) |
+| Event streaming | None | Confluent Kafka (plays, follows, purchases, posts) |
+| Analytics | Static counts | IBM watsonx.ai (ML inference, trend forecasting) |
+| Content AI | None | watsonx.ai Granite (bio/post/description drafting) |
+| Artist workflows | Manual | watsonx Orchestrate (automated campaign pipelines) |
+| Model oversight | None | watsonx.governance (bias, drift, explainability, audit) |
+
+**The Flask REST API, the marshmallow validation layer, and the `success()` / `error()` response envelope are unchanged across this entire evolution.** The API contract established in the MVP is the stable interface that every future service — Kafka producers, watsonx inference consumers, Orchestrate skills — will depend on. Building that contract correctly at MVP stage is what makes the enterprise evolution tractable rather than a rewrite.
+
+---
+
+## 16. IBM Bob Development Methodology
+
+ArtistHub was built using **IBM Bob** — IBM's AI software engineering assistant — as an active collaborator across the full development lifecycle. This section documents how Bob was used, what it produced, and how the developer maintained oversight and responsibility for every decision.
+
+### What is IBM Bob?
+
+IBM Bob is an AI-powered software engineering agent integrated into the development environment. It can read and write code, execute shell commands, run tests, analyse lint output, and engage in multi-turn technical conversations grounded in the actual codebase — not hypothetical or hallucinated code.
+
+---
+
+### How Bob Was Used in This Project
+
+#### Architecture Planning
+
+Bob was engaged at the project outset to reason through the domain model and API surface. Key decisions made collaboratively:
+
+- **Dual-model authentication** — Bob proposed and justified the `Artist` / `Fan` separate table design over a single `User` table with a `role` column, arguing that the nullable-field explosion and role-checking complexity in a shared table outweighs the join simplicity.
+- **Polymorphic Order model** — Bob designed the `item_type` (`"release"` | `"merch"`) + `item_id` pattern to avoid a separate order table per product type.
+- **`UNIQUE(fan_id, artist_id)` constraint** — Bob identified that a DB-level constraint is more reliable than application-level duplicate checking, and recommended catching `IntegrityError` in the route to surface a clean `409`.
+
+The developer reviewed each proposal, challenged assumptions (e.g. whether a shared user table would simplify the frontend), and approved the final design.
+
+#### Code Generation
+
+Bob generated the initial implementation of all models, routes, schemas, and utilities. Each generated file followed the project's established conventions:
+
+- `success()` / `error()` response envelope from `app/utils/responses.py`
+- `db` and `login_manager` imported from `app.extensions` (never re-instantiated)
+- Blueprints registered exclusively in `create_app()`
+- `@login_required` + ownership `abort(403)` pattern on every mutating route
+- marshmallow schema validation before any DB access
+
+The developer read every generated function, verified the logic matched the specification, and requested revisions where behaviour was incorrect or incomplete.
+
+#### Test Generation
+
+Bob generated the full pytest suite — 243 tests across 9 modules — including:
+
+- Happy-path and error-path coverage for every endpoint
+- Authentication and role enforcement tests (artist session on fan-only endpoint → `403`, etc.)
+- DB constraint tests (`UNIQUE` follow → `409`, cascade delete, etc.)
+- Pagination boundary tests (`per_page` capped at 50)
+
+The developer ran each test module as it was generated, reviewed failures, and instructed Bob to fix root causes rather than adjust assertions to pass.
+
+#### Documentation
+
+Bob produced all inline docstrings (module, class, and function level), the `AGENTS.md` coding standards document, and this README. The developer reviewed documentation for technical accuracy and tone, and corrected several places where Bob's phrasing was imprecise about security constraints.
+
+#### Code Review
+
+Before each phase was finalised, Bob performed a structured code review of its own output — identifying issues such as:
+
+- `static_folder="../../frontend"` resolving to a non-existent path inside the Docker container (fixed by adding a runtime `os.path.isdir` check)
+- `COPY --from=deps /usr/local/bin` in the multi-stage Dockerfile overwriting the runtime stage's interpreter symlinks (fixed by copying only `gunicorn`)
+- `start_period: 10s` in `docker-compose.yml` being shorter than the Dockerfile's `--start-period=15s` (corrected to `20s`)
+- Docker Compose healthcheck using `CMD` instead of `CMD-SHELL` (prevents shell operators from being interpreted)
+
+The developer approved each fix after verifying the reasoning independently.
+
+#### Containerisation
+
+Bob wrote the production Dockerfile, `.dockerignore`, and `docker-compose.yml`. The developer reviewed the security properties (non-root user, no secrets in layers, targeted `COPY` from deps stage) and the operational properties (volume mount, `HEALTHCHECK`, gunicorn flags) before approving.
+
+---
+
+### Developer Responsibility
+
+Bob generated code; the developer owned it. Specifically:
+
+- Every schema, model, route, and test was **read and understood** before being committed.
+- Bob's architectural proposals were **challenged and debated** — the developer asked "why not X?" before accepting "use Y".
+- All test failures were **diagnosed by the developer** before Bob was instructed to fix them — Bob was not permitted to simply adjust assertions to make tests pass.
+- Security decisions (session cookie flags, ownership checks, secrets handling) were **independently verified** against Flask-Login and Flask documentation.
+- The final commit history reflects **deliberate, reviewed increments** — not a single bulk dump of AI output.
+
+This methodology demonstrates that AI-assisted development, practised with appropriate rigour, accelerates delivery without compromising code quality, security, or developer understanding.
+
+---
+
+## 17. Contributing
+
+1. Create a feature branch: `git checkout -b feature/your-feature`
+2. Follow the conventions in [`AGENTS.md`](AGENTS.md)
+3. Run `flake8 app` and `pytest --cov=app` from `backend/` — both must pass with zero warnings
+4. Open a pull request to `main` — CI runs automatically
+
+---
+
+*ArtistHub — built with Python, Flask, and IBM Bob.*

@@ -1,0 +1,79 @@
+# docker/docker-compose.yml
+#
+# ArtistHub full-stack local environment.
+#
+# PREREQUISITE — create a .env file at the repo root before starting:
+#   cp .env.example .env
+#   # then set a real SECRET_KEY in .env:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+#
+# The .env file is MANDATORY. ProductionConfig (selected below via
+# FLASK_ENV=production) will raise a RuntimeError at startup if SECRET_KEY
+# is missing or still set to the insecure default placeholder.
+#
+# Usage:
+#   docker-compose -f docker/docker-compose.yml up --build
+#
+# Services:
+#   backend  Flask/gunicorn API server (port 5000, internal only)
+#   web      nginx — serves frontend static files + proxies /api/* (port 8080)
+#
+# The SQLite database file is persisted in a named Docker volume so
+# data survives container restarts. In a production upgrade, replace
+# SQLite with a `db` service (PostgreSQL image) and update DATABASE_URL.
+
+version: "3.9"
+
+services:
+
+  # ------------------------------------------------------------------ #
+  # Flask backend                                                        #
+  # ------------------------------------------------------------------ #
+  backend:
+    build:
+      context: ..               # repo root (Dockerfile COPYs backend/ from there)
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env                 # Provides SECRET_KEY (required) and DATABASE_URL
+    environment:
+      # NOTE: `environment` keys take precedence over `env_file` values for
+      # the same key. FLASK_ENV=production is deliberately enforced here so
+      # that the Compose stack always runs ProductionConfig regardless of what
+      # is set in .env. Do not remove this override.
+      FLASK_ENV: production
+    volumes:
+      # Persist the SQLite database file across restarts.
+      - db-data:/app/instance
+    # backend is NOT exposed on the host; nginx is the only entry point.
+    expose:
+      - "5000"
+    restart: unless-stopped
+    healthcheck:
+      # CMD-SHELL runs the command in a shell so the || operator works.
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # 20 s gives gunicorn time to bind, initialise SQLite, and respond on
+      # slow hosts — matches the Dockerfile HEALTHCHECK --start-period=15s
+      # with 5 s of headroom.
+      start_period: 20s
+
+  # ------------------------------------------------------------------ #
+  # nginx — static files + API reverse proxy                            #
+  # ------------------------------------------------------------------ #
+  web:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"               # access the app at http://localhost:8080
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../frontend:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db-data:
+    driver: local

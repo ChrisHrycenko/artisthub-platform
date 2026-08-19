@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artist Feed — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-posts.html" aria-current="page">Feed</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="section">
+      <div class="container feed-layout">
+
+        <!-- ============================================================
+             Feed column
+        ============================================================ -->
+        <div class="feed-main">
+          <div class="browse-header">
+            <div>
+              <h1>Artist Feed</h1>
+              <p class="section-sub">
+                Latest posts from independent artists on ArtistHub.
+              </p>
+            </div>
+          </div>
+
+          <p
+            id="results-summary"
+            class="results-summary"
+            aria-live="polite"
+          ></p>
+
+          <!-- Post cards — populated by browse-posts.js -->
+          <div id="posts-feed" aria-label="Artist posts feed">
+            <div class="post-card skeleton-card">
+              <div class="placeholder-img" style="height:60px; border-radius:50%; width:60px;"></div>
+              <div style="flex:1;">
+                <div class="placeholder-text" style="height:1rem; width:40%; margin-bottom:.5rem;"></div>
+                <div class="placeholder-text" style="height:0.8rem; width:80%;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pagination" class="pagination"></div>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/browse-posts.js"></script>
+
+</body>
+</html>

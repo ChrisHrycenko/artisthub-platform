@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fan Dashboard — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-merch.html">Merch</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="fan-dashboard.html" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ================================================================
+         Loading skeleton
+    ================================================================ -->
+    <div id="dashboard-loading" class="section">
+      <div class="container">
+        <div class="placeholder-text" style="width:200px; height:2rem; margin-bottom:1rem;"></div>
+        <div class="placeholder-text" style="width:140px; height:1rem;"></div>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Auth error — shown when a non-fan visits this page
+    ================================================================ -->
+    <div id="dashboard-error" class="section" style="display:none;">
+      <div class="container">
+        <div class="alert alert-error">
+          You must be signed in as a fan to view this page.
+        </div>
+        <a href="fan-login.html" class="btn btn-primary" style="margin-top:1rem;">
+          Sign In
+        </a>
+      </div>
+    </div>
+
+    <!-- ================================================================
+         Dashboard content
+    ================================================================ -->
+    <div id="dashboard-content" style="display:none;">
+
+      <!-- Welcome band -->
+      <section class="profile-hero">
+        <div class="container">
+          <h1 id="dash-welcome"></h1>
+          <p class="profile-subtitle" id="dash-email"></p>
+        </div>
+      </section>
+
+      <!-- Following stats -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Your Stats</h2>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-number" id="stat-following">—</span>
+              <span class="stat-label">Artists Following</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Followed artists feed -->
+      <section class="section">
+        <div class="container">
+          <h2>Artists You Follow</h2>
+          <p class="muted" id="following-empty" style="display:none;">
+            You're not following any artists yet.
+            <a href="browse-artists.html">Discover artists →</a>
+          </p>
+          <div id="following-grid" class="card-grid"></div>
+        </div>
+      </section>
+
+      <!-- Latest posts from followed artists -->
+      <section class="section section-alt">
+        <div class="container">
+          <h2>Latest Posts from Your Artists</h2>
+          <p class="muted" id="feed-empty" style="display:none;">
+            Follow some artists to see their latest updates here.
+          </p>
+          <div id="feed-list"></div>
+        </div>
+      </section>
+
+    </div><!-- /#dashboard-content -->
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/fan-dashboard.js"></script>
+
+</body>
+</html>
