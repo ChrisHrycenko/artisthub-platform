@@ -57,8 +57,21 @@ htmlcov/
 Thumbs.db
 
 # ------------------------------------------------------------------ #
+# Directories not needed in the backend image build context           #
+# ------------------------------------------------------------------ #
+frontend/
+docker/
+kafka/
+scripts/
+.bob/
+.git/
+
+# ------------------------------------------------------------------ #
 # Documentation (not needed at runtime)                               #
 # ------------------------------------------------------------------ #
 README.md
 AGENTS.md
 artisthub-plan.md
+kafka-architecture-plan.md
+docker-containerize-plan.md
+COMMIT_MSG.txt

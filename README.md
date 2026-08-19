@@ -607,6 +607,20 @@ frontend/
 
 ## 11. Docker
 
+### Prerequisites
+
+| Tool | Install |
+|---|---|
+| Docker Engine 24+ or Docker Desktop | [docs.docker.com/get-docker](https://docs.docker.com/get-docker/) |
+| Docker Compose v2 (bundled with Docker Desktop) | Verify: `docker compose version` |
+
+```bash
+docker --version         # Docker version 24.x or higher
+docker compose version   # Docker Compose version v2.x
+```
+
+---
+
 ### Docker files
 
 | File | Purpose |
@@ -614,15 +628,16 @@ frontend/
 | `docker/Dockerfile` | Multi-stage build — deps layer cached separately from source |
 | `docker/docker-compose.yml` | Full stack: `backend` (gunicorn, port 5000 internal) + `web` (nginx, port 8080) |
 | `docker/nginx.conf` | Serves `frontend/` static files; reverse-proxies `/api/*` to Flask |
-| `.dockerignore` | Excludes `.env`, `venv/`, `__pycache__`, `tests/`, `*.db` from the build context |
+| `.dockerignore` | Excludes `.env`, `venv/`, `__pycache__`, `tests/`, `*.db`, `kafka/`, `frontend/` from the build context |
 
 ### Image security properties
 
 - **No secrets baked in** — `.dockerignore` blocks `.env`; credentials are injected at runtime via `--env-file`
-- **Non-root process** — runs as the `artisthub` system user
+- **Non-root process** — runs as the `artisthub` system user (no root inside the container)
 - **Minimal surface** — only `curl` added to `python:3.11-slim`; no shell tooling, no package manager
 - **Safe layer caching** — `requirements.txt` is copied before source; pip only re-runs on dependency changes
 - **Targeted binary copy** — only `gunicorn` is copied from the deps stage, not the entire `/usr/local/bin`
+- **Lean build context** — `kafka/`, `frontend/`, `docker/`, `scripts/` are all excluded from the build context by `.dockerignore`
 
 ---
 
@@ -634,42 +649,50 @@ cp .env.example .env
 python3 -c "import secrets; print(secrets.token_hex(32))"
 # paste output as SECRET_KEY in .env
 
-# 2. Build (run from repo root)
+# 2. Build (run from repo root — takes ~60 s on first build)
 docker build -f docker/Dockerfile -t artisthub-backend .
 
-# 3. Run
-docker run --rm \
+# 3. Run detached (logs visible with: docker logs -f artisthub)
+docker run -d \
   --env-file .env \
+  -e FLASK_ENV=development \
   -v ah-db:/app/instance \
   -p 5000:5000 \
   --name artisthub \
   artisthub-backend
 
-# 4. Test health endpoint
+# 4. Wait for gunicorn to bind (~5 s), then test the health endpoint
+sleep 5
 curl -s http://localhost:5000/api/health | python3 -m json.tool
 # Expected response:
 # {
-#   "data": { "app": "ArtistHub", "database": "ok", "environment": "...", "status": "ok" },
+#   "data": { "app": "ArtistHub", "database": "ok", "environment": "development", "status": "ok" },
 #   "status": "success"
 # }
 
 # 5. Test a public API route
 curl -s "http://localhost:5000/api/artists?page=1&per_page=3" | python3 -m json.tool
 
-# 6. Stop
-docker stop artisthub
+# 6. Check the built-in Docker HEALTHCHECK status (healthy / starting)
+docker inspect --format='{{.State.Health.Status}}' artisthub
+
+# 7. Stop and remove the container
+docker stop artisthub && docker rm artisthub
 ```
 
-> **Note:** If `.env` sets `FLASK_ENV=production`, the container will refuse to start with the
-> default `SECRET_KEY` placeholder — `ProductionConfig` raises a `RuntimeError` at boot. Always
-> generate a real key before running in production mode.
+> **Note — `FLASK_ENV` and `SECRET_KEY`:**
+> The `-e FLASK_ENV=development` flag above activates `DevelopmentConfig`, which accepts the
+> default `SECRET_KEY` placeholder in `.env`. If you switch to `FLASK_ENV=production` you **must**
+> generate a real key first (`python3 -c "import secrets; print(secrets.token_hex(32))"`) —
+> `ProductionConfig` raises a `RuntimeError` at boot if the placeholder is detected.
 
 | Flag | Purpose |
 |---|---|
-| `--env-file .env` | Injects secrets at runtime — never baked into the image |
+| `--env-file .env` | Injects `SECRET_KEY` and `DATABASE_URL` at runtime — never baked into the image |
+| `-e FLASK_ENV=development` | Overrides `FLASK_ENV` from `.env`; use `production` with a real secret key |
 | `-v ah-db:/app/instance` | Named volume persists the SQLite DB across restarts |
-| `-p 5000:5000` | Exposes gunicorn to the host |
-| `--rm` | Auto-removes the container on stop |
+| `-p 5000:5000` | Maps host port 5000 → gunicorn inside the container |
+| `-d` | Detached — frees your terminal; follow logs with `docker logs -f artisthub` |
 
 ---
 
