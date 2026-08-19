@@ -1,12 +1,14 @@
 # ArtistHub
 
-> A full-stack REST API platform connecting independent musicians with their fans — built with Python Flask, containerised with Docker, and developed collaboratively with IBM Bob AI.
+> A full-stack event-driven REST API platform connecting independent musicians with their fans — built with Python Flask, Apache Kafka (Confluent-compatible), Avro-governed event contracts, containerised with Docker, and developed collaboratively with IBM Bob AI.
 
 [![CI](https://github.com/ChrisHrycenko/artisthub-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/ChrisHrycenko/artisthub-platform/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![Flask](https://img.shields.io/badge/Flask-3.0-lightgrey)
-![Coverage](https://img.shields.io/badge/coverage-96%25-brightgreen)
-![Tests](https://img.shields.io/badge/tests-243%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-86%25-brightgreen)
+![Tests](https://img.shields.io/badge/tests-424%20passing-brightgreen)
+![Kafka](https://img.shields.io/badge/Kafka-Confluent%20Compatible-orange)
+![Avro](https://img.shields.io/badge/Avro-Schema%20Registry-blueviolet)
 ![Docker](https://img.shields.io/badge/Docker-ready-blue)
 
 ---
@@ -24,13 +26,16 @@
 9. [API Reference](#9-api-reference)
 10. [Local Installation](#10-local-installation)
 11. [Docker](#11-docker)
-12. [Local Kafka Development Stack (Phase 7A)](#12-local-kafka-development-stack-phase-7a)
+12. [Local Kafka Development Stack](#12-local-kafka-development-stack-phase-7a)
+12b. [Avro Serialization and Schema Registry](#12b-avro-serialization-and-schema-registry-phase-7f)
 13. [Testing](#13-testing)
 14. [Security](#14-security)
 15. [Roadmap](#15-roadmap)
 16. [Enterprise Evolution Roadmap](#16-enterprise-evolution-roadmap)
 17. [IBM Bob Development Methodology](#17-ibm-bob-development-methodology)
-18. [Contributing](#18-contributing)
+18. [Event-Driven Architecture Deep Dive](#18-event-driven-architecture-deep-dive)
+19. [Architecture Interview Walkthrough](#19-architecture-interview-walkthrough)
+20. [Contributing](#20-contributing)
 
 ---
 
@@ -1286,13 +1291,304 @@ This methodology demonstrates that AI-assisted development, practised with appro
 
 ---
 
-## 18. Contributing
+## 18. Event-Driven Architecture Deep Dive
+
+This section is intended for technical reviewers — Solutions Architects, Senior Engineers, and IBM/Confluent interviewers — who want to understand exactly why and how ArtistHub evolved from a synchronous REST API to an event-driven platform.
+
+### Why Kafka was introduced
+
+The initial REST architecture was fully functional but had three compounding problems as the platform grew:
+
+1. **Tight coupling** — the HTTP response time depended on all downstream side effects (analytics updates, notification dispatch) completing synchronously. A slow analytics DB write blocked the API response.
+2. **No fan-out** — when an artist published a release, there was no mechanism to notify thousands of followers without making the API do O(N) DB inserts per request.
+3. **No audit trail** — deleted events were gone. There was no way to replay "what happened" to rebuild read models or debug consumer bugs.
+
+Kafka solved all three: the API commits exactly one outbox row and returns immediately. All downstream effects happen asynchronously, independently, and durably.
+
+### The Transactional Outbox Pattern
+
+The most critical correctness guarantee in this architecture is the **Transactional Outbox Pattern**:
+
+```
+Business mutation  ─┐
+                    ├─ SAME SQLAlchemy session ─► db.session.commit()
+Outbox row          ─┘
+```
+
+When a fan follows an artist:
+1. The `Follow` row and the `OutboxEvent` row are written in a **single atomic transaction**.
+2. If the DB commit fails, neither row exists — no phantom outbox event.
+3. If the relay crashes after publishing but before marking `published_at`, re-delivery is safe because consumers deduplicate on `event_id`.
+4. If Kafka is completely down, the API continues working — outbox rows accumulate and publish when the broker returns.
+
+**Key invariants:**
+- `published_at IS NULL` = pending (relay will attempt delivery)
+- `published_at IS NOT NULL` = delivered (relay will not retry)
+- `last_error IS NOT NULL` = failed attempt (will be retried next poll)
+
+### Topic Design
+
+| Topic | Partitions | Retention | Events routed here |
+|---|---|---|---|
+| `artisthub.social` | 6 | 7 days | follow, unfollow, post created/deleted |
+| `artisthub.catalog` | 6 | 30 days | release and merch create/update/delete |
+| `artisthub.identity` | 3 | 90 days | artist registration, profile update (PII boundary) |
+| `artisthub.deadletter` | 3 | 14 days | all consumer-rejected messages |
+
+**Why 6 partitions for social/catalog?** Fan-out events dominate traffic. 6 partitions allow horizontal scaling to 6 parallel consumers per group without rebalancing.
+
+**Why separate identity topic?** `artist.registered` carries an email address. Keeping PII in a separate topic enables independent access control, separate retention policy, and clear audit scope.
+
+**Message key = artist_id** for all events. This routes all events for a given artist to the same partition, preserving per-artist ordering without global ordering overhead.
+
+### Producer Architecture
+
+```
+HTTP Request
+    │
+    ▼
+Flask route (routes/*.py)
+    │  db.session.add(business_obj)
+    │  db.session.add(OutboxEvent)   ← same transaction
+    ▼
+db.session.commit()
+    │
+    ▼
+HTTP Response (returned immediately — Kafka not in the request path)
+    │
+    │  (async, separate process)
+    ▼
+outbox_relay.py polls event_outbox WHERE published_at IS NULL
+    │
+    ▼
+KafkaProducerService.produce_avro()
+    │  ├─ avro_utils.record_name_for_event_type()
+    │  ├─ avro_utils.get_or_register_schema_id()  → Schema Registry HTTP
+    │  ├─ avro_utils.encode()                      → Confluent wire bytes
+    │  └─ confluent_kafka.Producer.produce()
+    │
+    ▼
+Broker ACK (delivery callback)
+    │
+    ▼
+OutboxEvent.published_at = now()   db.session.commit()
+```
+
+### Avro and Schema Registry
+
+Every Kafka message is **Confluent Avro wire format**:
+```
+[0x00][schema_id: 4 bytes BE][Avro binary payload]
+```
+
+The `schema_id` is looked up from Schema Registry at first produce per event type, then cached for the process lifetime. Consumers use the same id to fetch the reader schema.
+
+**RecordNameStrategy** is used for subject naming:
+```
+subject = "io.artisthub.events.<RecordName>"
+```
+This avoids subject collisions when multiple event types share a topic.
+
+**BACKWARD compatibility** mode is enforced:
+- Safe: add optional field with a default
+- Breaking: remove required field, change field type → **rejected by the registry**
+
+### Consumer Groups
+
+| Consumer group | Subscribed topics | Business effect |
+|---|---|---|
+| `artisthub.analytics.v1` | social, catalog, identity | Increments per-artist counters in `analytics_state` |
+| `artisthub.notifications.v1` | catalog only | Creates `notification` rows (work queue) per follower |
+
+Both groups use **manual offset commits** (enable.auto.commit = false):
+```
+1. Consume message
+2. Deserialize (Avro)
+3. Validate envelope fields
+4. DB deduplication check (ProcessedEvent table)
+5. Apply business side effect
+6. INSERT ProcessedEvent row
+7. db.session.commit()     ← DB commits here
+8. consumer.commit(msg)    ← Kafka offset commits here
+```
+
+If step 7 fails, step 8 never runs. On restart, the message is re-delivered. The ProcessedEvent check at step 4 prevents double-counting.
+
+### Idempotency — Two Layers
+
+**Layer 1 — ProcessedEvent table (application level)**
+```
+ProcessedEvent.event_id  (PRIMARY KEY)
+```
+Before applying any side effect, the consumer checks whether this `event_id` has already been processed. If it has, the message is skipped and the offset is committed.
+
+**Layer 2 — Database constraints (storage level)**
+```sql
+-- analytics_state: artist_id is the PK — upsert is idempotent
+-- notification: UNIQUE(event_id, fan_id) — prevents duplicate rows
+```
+
+Together these layers guarantee exactly-once business effect even if Kafka delivers the same message multiple times (at-least-once delivery).
+
+### Dead-Letter Handling
+
+Messages that cannot be processed are routed to `artisthub.deadletter`. Dead-letter candidates:
+- **Malformed message**: missing Confluent magic byte, corrupt Avro binary, missing required envelope fields
+- **Missing required payload field**: `artist_id` or `release_id` absent in a release event
+- **DB retries exhausted**: 3 attempts with exponential backoff, all failing
+
+Dead-letter records carry full metadata:
+```json
+{
+  "dead_letter_at": "2026-08-19T12:00:00Z",
+  "original_topic": "artisthub.catalog",
+  "original_partition": 2,
+  "original_offset": 1847,
+  "event_id": "uuid-or-null",
+  "failure_reason": "Avro deserialization error: unknown schema_id 999",
+  "original_payload": "..raw bytes or JSON.."
+}
+```
+
+**Dead-letter messages are plain JSON** — monitoring tooling should not depend on a domain Avro schema.
+
+**Known limitation:** When the Confluent magic byte is present but the schema_id is unknown (e.g. Schema Registry unreachable), deserialization fails before the payload is readable. `event_id` is null in the dead-letter record. This is documented and logged at ERROR level.
+
+### Local Docker Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Docker Compose (docker-compose.yml + docker-compose.kafka.yml)  │
+│                                                                  │
+│  ┌─────────────────┐   ┌────────────────────────────────────┐   │
+│  │  nginx :8080    │   │  Redpanda (Kafka-compatible) :9092 │   │
+│  │  ├ static html  │   │  Schema Registry          :8081    │   │
+│  │  └ /api/* proxy │   │  Admin API                :9644    │   │
+│  └────────┬────────┘   └────────────────────────────────────┘   │
+│           │                         ▲  ▼                        │
+│  ┌────────▼────────┐   ┌────────────┴──────────┐                │
+│  │ Flask/gunicorn  │   │  outbox-relay          │                │
+│  │ :5000 internal  │   │  analytics-consumer    │                │
+│  │                 │   │  notification-consumer │                │
+│  │  SQLite DB      ├──►│  (shared SQLite vol)   │                │
+│  └─────────────────┘   └───────────────────────┘                │
+│                                                                  │
+│  ┌──────────────────┐                                            │
+│  │ Redpanda Console │ :8082  (browser UI)                        │
+│  └──────────────────┘                                            │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+All services share a named Docker volume `db-data` mounted at `/app/instance` so the relay and consumers can read the same SQLite database that Flask writes to.
+
+### Future Confluent Cloud Migration Path
+
+Switching from local Redpanda to Confluent Cloud requires **zero application code changes**. Only environment variables change:
+
+| Variable | Local value | Confluent Cloud value |
+|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `redpanda:29092` | `pkc-xxx.region.provider.confluent.cloud:9092` |
+| `KAFKA_SECURITY_PROTOCOL` | `PLAINTEXT` | `SASL_SSL` |
+| `CONFLUENT_API_KEY` | *(blank)* | your API key |
+| `CONFLUENT_API_SECRET` | *(blank)* | your API secret |
+| `SCHEMA_REGISTRY_URL` | `http://redpanda:8081` | `https://psrc-xxx.region.provider.confluent.cloud` |
+| `SCHEMA_REGISTRY_API_KEY` | *(blank)* | your SR key |
+| `SCHEMA_REGISTRY_API_SECRET` | *(blank)* | your SR secret |
+
+The Confluent wire format, subject naming, and BACKWARD compatibility mode are identical between local Redpanda and Confluent Cloud.
+
+### What is currently implemented vs. future
+
+| Feature | Status |
+|---|---|
+| REST API (all 6 domains) | ✅ Implemented and tested |
+| Transactional Outbox | ✅ Implemented and tested |
+| Kafka producer (Avro) | ✅ Implemented and tested |
+| Analytics consumer | ✅ Implemented and tested |
+| Notification consumer (work queue) | ✅ Implemented and tested |
+| Schema Registry (local Redpanda) | ✅ Implemented; validated locally |
+| Confluent Cloud migration | 🔲 Config-only change (all code ready) |
+| Notification delivery worker | 🔲 Future (Phase 7H+) |
+| Avro/Confluent Cloud CI validation | 🔲 Future (requires CI secrets) |
+| Fan registration events | 🔲 Future (fan.registered event type) |
+
+---
+
+## 19. Architecture Interview Walkthrough
+
+### 30-Second Business Explanation
+
+ArtistHub is a platform for independent musicians. Artists create profiles, publish music releases and social posts, and list merchandise. Fans browse artists, follow the ones they like, and buy their releases and merch. When a fan follows an artist who then drops a new release, the fan gets notified. The platform is a clean domain problem: two user types, content creation, content consumption, and fan engagement — all the classic patterns in one codebase.
+
+---
+
+### 90-Second Solutions Sales Engineer Explanation
+
+> *Suitable for a technical conversation with a non-engineering Confluent SE or IBM account team.*
+
+"ArtistHub started as a standard Flask REST API — straightforward CRUD, session auth, SQLite. It worked fine. But the moment we asked 'what happens when an artist with 50,000 followers drops a new release?' we hit the wall. The HTTP handler would have to query all 50,000 followers, write 50,000 notification rows, and hold the database connection open for all of it — while the API caller is still waiting for a 200 OK.
+
+So we introduced Kafka. Now when an artist publishes a release, the API does exactly two things: it writes the release row and it writes one outbox event, in the same database transaction. The HTTP response returns in milliseconds. The Kafka relay picks up the outbox row asynchronously and publishes an Avro-encoded message to the `artisthub.catalog` topic. Two consumer groups are listening — the analytics consumer updates the artist's release count, and the notification consumer fans out one `notification` row per follower.
+
+We're using Confluent-compatible Avro with Schema Registry. Every event is governed by a schema. The producer cannot publish a malformed event — the schema enforces it. Consumers cannot silently mishandle a corrupt message — deserialization fails and routes to dead-letter. All 12 event types across social, catalog, and identity domains are registered subjects in Schema Registry with BACKWARD compatibility enforced.
+
+The entire Kafka stack runs locally with Redpanda. One environment variable change — `KAFKA_BOOTSTRAP_SERVERS` — points it at Confluent Cloud. No code changes needed."
+
+---
+
+### 3-Minute Technical Architecture Explanation
+
+> *Suitable for a technical architecture panel or senior engineer review.*
+
+**Layer 1 — Request/Response (Flask REST API)**
+
+The HTTP tier is a Flask application with 6 domain Blueprints: auth, artists, releases, posts, merch, follows. Every POST/PUT body is validated by a marshmallow schema before any database access. All responses follow a `{ status, data }` / `{ status, error }` envelope. Flask-Login manages session cookies with HttpOnly + SameSite=Lax. Ownership checks (`abort(403)`) guard every mutating route. The API is completely stateless with respect to Kafka — it never calls a producer directly.
+
+**Layer 2 — Transactional Outbox**
+
+The glue between the synchronous API and the asynchronous event pipeline is the `event_outbox` table. Every route that needs to emit a domain event calls a `build_*` function from `event_factory.py`. This function returns an `OutboxEvent` model instance that is added to the same SQLAlchemy session as the business object. `db.session.commit()` writes both atomically. If the commit fails, there is no orphan event. If the relay crashes after publishing, re-delivery is safe — consumers deduplicate on `event_id`.
+
+**Layer 3 — Kafka Producer**
+
+The `outbox_relay.py` process runs as a separate container. It polls the outbox for rows where `published_at IS NULL`, calls `KafkaProducerService.produce_avro()`, which:
+1. Looks up the Avro schema for the event type using `RecordNameStrategy` — `subject = "io.artisthub.events.<RecordName>"`
+2. Calls `avro_utils.get_or_register_schema_id()` — registers if new, cached per-process thereafter
+3. Serializes to Confluent wire format: `[0x00][schema_id 4 bytes big-endian][Avro binary]`
+4. Calls `confluent_kafka.Producer.produce()` with a delivery callback
+5. On broker ACK, the callback sets `published_at = now()` in the same DB session
+
+The producer uses `enable.idempotence=True`, `acks=all`, retries=5. All Kafka and Schema Registry credentials come from environment variables — nothing is hardcoded.
+
+**Layer 4 — Consumers**
+
+Two independent consumer processes subscribe to different topic sets:
+
+*Analytics consumer* subscribes to all three topics. It applies counter deltas to `AnalyticsState` rows (one per artist) and serves the `/api/artists/<id>/analytics` endpoint in real time. `enable.auto.commit = False`. The DB commit and the Kafka offset commit happen in strict sequence — DB first, then Kafka. A crash between them causes re-delivery which the `ProcessedEvent` dedup table absorbs.
+
+*Notification consumer* subscribes only to `artisthub.catalog`. On `artist.release.created`, it queries `Follow` for the artist's followers and inserts one `Notification` row per fan. A `UNIQUE(event_id, fan_id)` constraint on the `notification` table provides a second dedup layer. The notification rows are a durable work queue — the delivery worker (email/push) reads them in a future phase.
+
+*parse_message()* in both consumers detects the Confluent magic byte `0x00` and routes to `avro_utils.decode()`, falling back to JSON for unit tests. This means all 424 existing tests pass against plain JSON without requiring a live registry.
+
+**Idempotency chains**
+
+At-least-once Kafka delivery means any message can arrive twice. Three independent guards prevent double-processing:
+- `ProcessedEvent.event_id` (PRIMARY KEY) — checked before any side effect
+- `OutboxEvent.event_id` (UNIQUE) — prevents duplicate relay publishing
+- `Notification UNIQUE(event_id, fan_id)` — DB constraint as defence in depth
+
+**Schema governance**
+
+12 Avro schemas, one per event type, registered in Schema Registry with BACKWARD compatibility. Schema evolution rules: you may add optional fields with defaults (BACKWARD-compatible, validated in test suite). You may not remove required fields or change field types (breaking change, fastavro reader/writer schema test confirms rejection). All subjects follow RecordNameStrategy so TopicNameStrategy collisions are impossible.
+
+---
+
+## 20. Contributing
 
 1. Create a feature branch: `git checkout -b feature/your-feature`
 2. Follow the conventions in [`AGENTS.md`](AGENTS.md)
-3. Run `flake8 app` and `pytest --cov=app` from `backend/` — both must pass with zero warnings
+3. Run `flake8 app consumers` and `pytest --cov=app --cov=consumers` from `backend/` — both must pass
 4. Open a pull request to `main` — CI runs automatically
 
 ---
 
-*ArtistHub — built with Python, Flask, and IBM Bob.*
+*ArtistHub — built with Python, Flask, Kafka, Avro, and IBM Bob.*
