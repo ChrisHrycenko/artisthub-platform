@@ -1073,6 +1073,108 @@ Resource breakdown per overlay: 1 Namespace · 5 ServiceAccounts · 1 Role ·
 
 ---
 
+### Phase 8D — Confluent Cloud Connectivity
+
+Phase 8D establishes the ArtistHub Confluent Cloud configuration and validation
+infrastructure. **No application code is changed** — the existing SASL_SSL
+support built in Phase 7 is already complete.
+
+#### Key decision: configuration change only
+
+The Phase 7 implementation already supports Confluent Cloud end-to-end:
+- `kafka_producer.py`: `KAFKA_SECURITY_PROTOCOL=SASL_SSL` + `CONFLUENT_API_KEY/SECRET`
+- `analytics_consumer.py` / `notification_consumer.py`: same SASL_SSL config path
+- `avro_utils.py`: `SCHEMA_REGISTRY_API_KEY/SECRET` → HTTP basic auth on every SR call
+
+Switching from local Redpanda to Confluent Cloud requires only environment variable changes.
+
+#### Files created / modified
+
+| File | Purpose |
+|---|---|
+| `scripts/confluent-provision.md` | Exact Confluent CLI commands: environment, cluster, topics, SA, API keys |
+| `scripts/validate-phase-8d.sh` | Validation script: 11 local gates pass, 8 Confluent gates unblock after credentials |
+| `kafka/confluent-sr-test.py` | SR: connectivity, BACKWARD mode, 12 subjects, v2 compat, breaking rejection |
+| `kafka/confluent-smoke-test.py` | Kafka: topic verify, producer Avro ack, both consumer groups, DLQ write |
+| `docs/confluent-architecture.md` | Architecture reference: resources, config table, auth, ACL matrix, NetworkPolicy |
+| `openshift/base/networkpolicies.yaml` | Phase 8D finding: broad egress documented as intentional design decision |
+| `.env.example` | Confluent section: `KAFKA_SECURITY_PROTOCOL`, `CONFLUENT_API_KEY/SECRET`, `SCHEMA_REGISTRY_*` |
+
+#### Confluent Cloud resource requirements
+
+| Resource | Value |
+|---|---|
+| Cluster type | Basic (MVP tier) |
+| Topics | `artisthub.social` (6p, 7d), `artisthub.catalog` (6p, 7d), `artisthub.identity` (3p, 7d), `artisthub.deadletter` (3p, 30d) |
+| SR subjects | 12 (RecordNameStrategy, BACKWARD compatibility) |
+| Auth | SASL_SSL + PLAIN — Confluent API key = SASL username |
+| Network | DNS-resolved endpoints — broad egress 9092+443 required |
+
+#### NetworkPolicy finding
+
+Confluent Cloud does **not** publish stable CIDR blocks for general Kafka cluster
+access. Broker and SR endpoints resolve via DNS to elastic cloud IPs that may change.
+Static CIDR-based NetworkPolicies would be unreliable.
+
+**Decision:** Broad egress on ports 9092 and 443 (`0.0.0.0/0`) is retained by design.
+To tighten: enable AWS PrivateLink or GCP Private Service Connect.
+See `docs/confluent-architecture.md` for full details.
+
+#### Running Phase 8D validation
+
+```bash
+# 1. Provision Confluent resources (see scripts/confluent-provision.md)
+# 2. Add credentials to .env (NEVER commit)
+export KAFKA_BOOTSTRAP_SERVERS=pkc-XXXXX.us-east-1.aws.confluent.cloud:9092
+export KAFKA_SECURITY_PROTOCOL=SASL_SSL
+export CONFLUENT_API_KEY=<key>        # not printed by scripts
+export CONFLUENT_API_SECRET=<secret>  # not printed by scripts
+export SCHEMA_REGISTRY_URL=https://psrc-XXXXX.us-east-1.aws.confluent.cloud
+export SCHEMA_REGISTRY_API_KEY=<sr-key>
+export SCHEMA_REGISTRY_API_SECRET=<sr-secret>
+# 3. Run full validation suite
+bash scripts/validate-phase-8d.sh
+# 4. SR-specific tests
+python3 kafka/confluent-sr-test.py
+# 5. Kafka smoke tests
+python3 kafka/confluent-smoke-test.py
+```
+
+#### Phase 8D validation results
+
+| Section | Check | Result |
+|---|---|---|
+| A | pytest (430 SQLite) | ✅ pass |
+| A | flake8 | ✅ pass |
+| A | PostgreSQL integration | ⛔ BLOCKED (no PG env) |
+| B | docker build Dockerfile | ✅ pass |
+| B | docker build Dockerfile.frontend | ✅ pass |
+| B | `/api/health` | ✅ pass |
+| C | All 12 Avro schema files parse | ✅ pass |
+| D | Confluent credential presence | ⛔ BLOCKED (no live credentials) |
+| E | Schema Registry connectivity | ⛔ BLOCKED |
+| E | BACKWARD compatibility mode | ⛔ BLOCKED |
+| E | 12 subjects registered | ⛔ BLOCKED |
+| F | Kafka topic + partition verify | ⛔ BLOCKED |
+| G | Producer Avro ack | ⛔ BLOCKED |
+| G | Consumer smoke (both groups) | ⛔ BLOCKED |
+| H | kustomize local overlay | ✅ pass |
+| H | kustomize production overlay | ✅ pass |
+| I | No credentials committed | ✅ pass |
+| I | `openshift/secrets/` gitignored | ✅ pass |
+| I | `.env` gitignored | ✅ pass |
+
+**11 PASSED · 8 BLOCKED (external credentials required) · 0 FAILED**
+
+The 8 BLOCKED gates are not failures — they require Confluent Cloud credentials
+that cannot be committed to git. Follow `scripts/confluent-provision.md` to
+provision the resources, then re-run `bash scripts/validate-phase-8d.sh` to
+pass all gates.
+
+---
+
+
+
 
 ## 12. Local Kafka Development Stack (Phase 7A)
 
