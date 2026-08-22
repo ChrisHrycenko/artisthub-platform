@@ -1,0 +1,96 @@
+# openshift/base/configmap.yaml
+#
+# ArtistHub non-secret runtime configuration.
+#
+# Separation of concerns:
+#   ConfigMap  — safe to store in git; contains non-secret config values.
+#   Secret     — NEVER in git; contains credentials and connection strings.
+#
+# Rules enforced here:
+#   - No passwords, API keys, tokens, or private connection strings.
+#   - Confluent bootstrap servers and Schema Registry URL are in Secrets
+#     (they encode endpoint topology that may reveal network layout).
+#   - FLASK_ENV is safe (string literal "production").
+#   - Consumer group names, retry parameters, and directory paths are safe.
+#
+# Environment-specific values (CORS_ORIGINS, replica counts) are patched
+# by the overlay kustomization.yaml — see overlays/local and overlays/production.
+#
+# After applying:
+#   kubectl get configmap artisthub-config -n artisthub -o yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: artisthub-config
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: artisthub-config
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Non-secret runtime configuration shared by all ArtistHub workloads.
+      Secrets (SECRET_KEY, DATABASE_URL, Confluent credentials) are in
+      the artisthub-secrets Secret object.
+data:
+  # ------------------------------------------------------------------ #
+  # Flask application                                                    #
+  # ------------------------------------------------------------------ #
+  FLASK_ENV: "production"
+
+  # ------------------------------------------------------------------ #
+  # Kafka / Confluent — non-secret values only                          #
+  # Actual bootstrap servers and Schema Registry URL are in Secrets.    #
+  # ------------------------------------------------------------------ #
+
+  # Security protocol used by all consumers and the outbox relay.
+  # SASL_SSL for Confluent Cloud; PLAINTEXT for local Redpanda testing.
+  # Overridden in overlays/local to PLAINTEXT.
+  KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+
+  # SASL mechanism for Confluent Cloud authentication.
+  # Overridden in overlays/local to "" (not applicable for PLAINTEXT).
+  KAFKA_SASL_MECHANISMS: "PLAIN"
+
+  # Consumer group identifiers — must match existing Kafka ACLs and
+  # offset metadata.  Do NOT change without a consumer group migration.
+  KAFKA_CONSUMER_GROUP: "artisthub.analytics.v1"
+  NOTIF_CONSUMER_GROUP: "artisthub.notifications.v1"
+
+  # ------------------------------------------------------------------ #
+  # Outbox relay                                                         #
+  # ------------------------------------------------------------------ #
+  OUTBOX_POLL_INTERVAL: "5"
+  OUTBOX_BATCH_SIZE: "100"
+
+  # ------------------------------------------------------------------ #
+  # Analytics consumer retry policy                                      #
+  # ------------------------------------------------------------------ #
+  ANALYTICS_MAX_RETRIES: "3"
+  ANALYTICS_RETRY_BACKOFF: "1.0"
+
+  # ------------------------------------------------------------------ #
+  # Notification consumer retry policy                                   #
+  # ------------------------------------------------------------------ #
+  NOTIF_MAX_RETRIES: "3"
+  NOTIF_RETRY_BACKOFF: "1.0"
+
+  # ------------------------------------------------------------------ #
+  # Avro schema directory                                                #
+  # Must match the COPY destination in docker/Dockerfile.               #
+  # ------------------------------------------------------------------ #
+  KAFKA_SCHEMAS_DIR: "/app/kafka/schemas"
+
+  # ------------------------------------------------------------------ #
+  # PostgreSQL connection pool (non-secret tuning values)               #
+  # See ProductionConfig in backend/app/config.py.                      #
+  # ------------------------------------------------------------------ #
+  DB_POOL_SIZE: "5"
+  DB_MAX_OVERFLOW: "10"
+
+  # ------------------------------------------------------------------ #
+  # CORS — patch in production overlay with the real Route hostname.    #
+  # ------------------------------------------------------------------ #
+  # Placeholder — overridden in overlays/production/configmap-patch.yaml
+  CORS_ORIGINS: "http://localhost:8080"

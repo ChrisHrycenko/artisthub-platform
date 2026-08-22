@@ -1,0 +1,65 @@
+# openshift/overlays/production/kustomization.yaml
+#
+# Kustomize overlay — OpenShift production cluster.
+#
+# Differences from base:
+#   - CORS_ORIGINS set to the production Route hostname.
+#   - KAFKA_SECURITY_PROTOCOL = SASL_SSL  (Confluent Cloud — same as base,
+#     but explicitly confirmed here for audit clarity).
+#   - KAFKA_BOOTSTRAP_SERVERS and SCHEMA_REGISTRY_URL remain in Secrets
+#     (not patched into ConfigMap here).
+#   - DB_POOL_SIZE tuned upward for 4-replica backend.
+#
+# The production overlay does NOT contain real secrets.
+# See openshift/base/secrets.example.yaml for the Secret schema.
+# Real secrets are injected via:
+#   - HashiCorp Vault Agent Injector (preferred)
+#   - External Secrets Operator
+#   - Manual: kubectl create secret generic artisthub-secrets \
+#               --from-literal=SECRET_KEY=<value> ...
+#   - Sealed Secrets (kubeseal + controller)
+#
+# Image references (imagetag + registry) are patched here so the
+# production overlay points to the OCP internal registry.
+# Replace <REGISTRY>, <TAG> with the actual values during deployment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: artisthub
+
+resources:
+  - ../../base
+
+# Production-specific ConfigMap patches.
+patches:
+  - target:
+      kind: ConfigMap
+      name: artisthub-config
+    patch: |-
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: "https://artisthub.apps.CLUSTER_DOMAIN"
+      - op: replace
+        path: /data/DB_POOL_SIZE
+        value: "5"
+      - op: replace
+        path: /data/DB_MAX_OVERFLOW
+        value: "10"
+
+# Common labels for all production resources (metadata only, not selectors).
+labels:
+  - pairs:
+      environment: production
+    includeSelectors: false
+    includeTemplates: false
+
+# Image registry overrides — replace placeholders before deployment.
+# These are applied to Deployment manifests in Phase 8E.
+# Example (fill in real values):
+#   images:
+#     - name: artisthub-backend
+#       newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend
+#       newTag: v0.3.0
+#     - name: artisthub-frontend
+#       newName: image-registry.openshift-image-registry.svc:5000/artisthub/frontend
+#       newTag: v0.3.0

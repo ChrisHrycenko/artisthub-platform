@@ -1,0 +1,100 @@
+# openshift/base/resource-defaults.yaml
+#
+# Resource requests and limits for each ArtistHub workload class.
+#
+# These are conservative MVP starting values based on:
+#   - Flask/gunicorn with 2 workers (backend)
+#   - nginx-unprivileged serving static files (frontend)
+#   - Single-threaded Python Kafka consumer (workers)
+#   - Single-threaded outbox relay (relay)
+#
+# IMPORTANT: These values are starting points only.
+# Tune based on actual observed usage from:
+#   - Phase 8H: Prometheus/Grafana metrics collection
+#   - Phase 8J: k6 load test results
+#
+# Rule of thumb applied here:
+#   request = "what the pod needs to schedule"
+#   limit   = "hard cap to prevent noisy-neighbour starvation"
+#   limit / request ratio ≤ 4 to avoid aggressive OOM on bursts
+#
+# Per-workload notes:
+#
+#   backend:
+#     gunicorn -w 2 in the current Dockerfile.  Each gunicorn worker is a
+#     separate Python process.  256Mi covers Python interpreter + SQLAlchemy
+#     ORM metadata + Flask request context per worker.  500m CPU covers
+#     steady-state API serving; bump to 1000m if load tests show saturation.
+#
+#   frontend:
+#     nginx serving pre-compressed static files and proxying /api/*.
+#     Extremely low CPU; 64Mi covers nginx worker + event loop overhead.
+#
+#   outbox-relay:
+#     Single Python process polling DB every 5s and publishing to Kafka.
+#     Lightweight — 100Mi is generous.
+#
+#   analytics-consumer / notification-consumer:
+#     Single-threaded confluent-kafka poll loop with Avro decode +
+#     SQLAlchemy write per message.  128Mi covers typical batch sizes.
+#     CPU is low in normal operation; 200m covers occasional rebalance bursts.
+#
+# These values are embedded in Deployment manifests (Phase 8E) via
+# Kustomize patches.  They are documented here for reference and review.
+---
+# Resource defaults documented as a ConfigMap for reference.
+# Actual resource settings live in each Deployment template.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: artisthub-resource-defaults
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: artisthub-resource-defaults
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Documentation-only ConfigMap. Records the initial resource
+      request/limit values for each workload class. Actual values are
+      in Deployment specs (Phase 8E). Tune from Phase 8H/8J metrics.
+data:
+  # ------------------------------------------------------------------
+  # backend (Flask/gunicorn -w 2)
+  # ------------------------------------------------------------------
+  backend.resources.requests.cpu: "100m"
+  backend.resources.requests.memory: "256Mi"
+  backend.resources.limits.cpu: "500m"
+  backend.resources.limits.memory: "512Mi"
+
+  # ------------------------------------------------------------------
+  # frontend (nginx-unprivileged)
+  # ------------------------------------------------------------------
+  frontend.resources.requests.cpu: "25m"
+  frontend.resources.requests.memory: "64Mi"
+  frontend.resources.limits.cpu: "100m"
+  frontend.resources.limits.memory: "128Mi"
+
+  # ------------------------------------------------------------------
+  # outbox-relay
+  # ------------------------------------------------------------------
+  outbox-relay.resources.requests.cpu: "50m"
+  outbox-relay.resources.requests.memory: "128Mi"
+  outbox-relay.resources.limits.cpu: "200m"
+  outbox-relay.resources.limits.memory: "256Mi"
+
+  # ------------------------------------------------------------------
+  # analytics-consumer
+  # ------------------------------------------------------------------
+  analytics-consumer.resources.requests.cpu: "50m"
+  analytics-consumer.resources.requests.memory: "128Mi"
+  analytics-consumer.resources.limits.cpu: "200m"
+  analytics-consumer.resources.limits.memory: "256Mi"
+
+  # ------------------------------------------------------------------
+  # notification-consumer
+  # ------------------------------------------------------------------
+  notification-consumer.resources.requests.cpu: "50m"
+  notification-consumer.resources.requests.memory: "128Mi"
+  notification-consumer.resources.limits.cpu: "200m"
+  notification-consumer.resources.limits.memory: "256Mi"

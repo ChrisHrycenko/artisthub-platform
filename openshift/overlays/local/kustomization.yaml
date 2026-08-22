@@ -1,0 +1,49 @@
+# openshift/overlays/local/kustomization.yaml
+#
+# Kustomize overlay — local development / Docker Desktop / kind.
+#
+# Differences from base:
+#   - KAFKA_SECURITY_PROTOCOL = PLAINTEXT  (local Redpanda, no SASL)
+#   - KAFKA_SASL_MECHANISMS   = ""         (not needed for PLAINTEXT)
+#   - KAFKA_BOOTSTRAP_SERVERS in configmap (local — not a secret for dev)
+#   - SCHEMA_REGISTRY_URL in configmap     (local Redpanda SR)
+#   - CORS_ORIGINS = http://localhost:8080  (local frontend)
+#
+# NOT a production overlay.  Real credentials are not used here.
+# The local overlay is for development cluster testing only.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: artisthub
+
+resources:
+  - ../../base
+
+# Patch the ConfigMap to override local-specific values.
+patches:
+  - target:
+      kind: ConfigMap
+      name: artisthub-config
+    patch: |-
+      - op: replace
+        path: /data/KAFKA_SECURITY_PROTOCOL
+        value: "PLAINTEXT"
+      - op: replace
+        path: /data/KAFKA_SASL_MECHANISMS
+        value: ""
+      - op: replace
+        path: /data/CORS_ORIGINS
+        value: "http://localhost:8080"
+      - op: add
+        path: /data/KAFKA_BOOTSTRAP_SERVERS
+        value: "redpanda:29092"
+      - op: add
+        path: /data/SCHEMA_REGISTRY_URL
+        value: "http://redpanda:8081"
+
+# Add local-specific labels to metadata only (not selectors).
+labels:
+  - pairs:
+      environment: local
+    includeSelectors: false
+    includeTemplates: false

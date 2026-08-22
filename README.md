@@ -1002,6 +1002,78 @@ In OpenShift, replace `127.0.0.11` with the cluster CoreDNS address
 
 ---
 
+### Phase 8C — OpenShift Manifest Foundation
+
+Phase 8C establishes the Kubernetes/OpenShift platform foundation for ArtistHub.
+No Deployments are created — those come in Phase 8E.
+No application code is modified — this phase is infrastructure-only.
+
+#### What was created
+
+| Path | Type | Purpose |
+|---|---|---|
+| `openshift/base/namespace.yaml` | Namespace | `artisthub` OCP Project |
+| `openshift/base/serviceaccounts.yaml` | 5 ServiceAccounts | One per workload, `automountServiceAccountToken: false` |
+| `openshift/base/rbac.yaml` | Role + 5 RoleBindings | GET `configmaps/secrets` scoped to named objects only |
+| `openshift/base/configmap.yaml` | ConfigMap | Non-secret runtime config (19 keys) |
+| `openshift/base/secrets.example.yaml` | Secret template | Schema reference — no real values |
+| `openshift/base/networkpolicies.yaml` | 11 NetworkPolicies | Default-deny + explicit allow per path |
+| `openshift/base/services.yaml` | 3 Services | `backend-svc`, `frontend-svc`, `postgresql-svc` (ClusterIP) |
+| `openshift/base/resource-defaults.yaml` | ConfigMap (ref) | CPU/memory request+limit baseline for all workloads |
+| `openshift/base/probe-templates.yaml` | ConfigMap (ref) | Probe strategy + YAML snippets for Phase 8E |
+| `openshift/base/security-context.yaml` | ConfigMap (ref) | securityContext strategy reference |
+| `openshift/base/kustomization.yaml` | Kustomize base | Entry point for both overlays |
+| `openshift/overlays/local/kustomization.yaml` | Kustomize overlay | PLAINTEXT Kafka, localhost CORS |
+| `openshift/overlays/production/kustomization.yaml` | Kustomize overlay | SASL_SSL, Route hostname, image tag placeholders |
+| `openshift/secrets/README.md` | Documentation | How to inject real secrets (never committed) |
+| `openshift/README.md` | Documentation | Full namespace, RBAC, NetworkPolicy, probe reference |
+
+#### Security posture
+
+All Phase 8C manifests are compatible with OpenShift's **restricted SCC** (default):
+
+| Check | Result |
+|---|---|
+| `runAsUser` hardcoded | ❌ Not present — OpenShift assigns arbitrary UID |
+| `privileged: true` | ❌ Not present |
+| `hostNetwork`, `hostPID`, `hostIPC` | ❌ Not present |
+| `hostPath` volumes | ❌ Not present |
+| `anyuid` SCC requested | ❌ Not requested |
+| `automountServiceAccountToken` | ❌ Disabled on all SAs |
+| Real credentials in ConfigMap | ❌ Not present |
+| Real credentials in secrets.example.yaml | ❌ Placeholder values only |
+| `openshift/secrets/` in `.gitignore` | ✅ Excluded |
+
+#### Kustomize validation
+
+```bash
+# Both build with zero warnings (Kustomize v5.8.1)
+kubectl kustomize openshift/overlays/local       # 31 resources
+kubectl kustomize openshift/overlays/production  # 31 resources
+```
+
+Resource breakdown per overlay: 1 Namespace · 5 ServiceAccounts · 1 Role ·
+5 RoleBindings · 4 ConfigMaps · 1 Secret · 3 Services · 11 NetworkPolicies
+
+#### Phase 8C validation results
+
+| Check | Result |
+|---|---|
+| pytest (430 SQLite + 23 PG) | ✅ no regression |
+| flake8 | ✅ clean |
+| `docker build Dockerfile` | ✅ |
+| `docker build Dockerfile.frontend` | ✅ |
+| `kubectl kustomize overlays/local` | ✅ zero warnings |
+| `kubectl kustomize overlays/production` | ✅ zero warnings |
+| Security scan (no root/privileged/hostPath/hostNetwork) | ✅ |
+| ConfigMap contains no secrets | ✅ |
+| secrets.example.yaml contains only REPLACE_ placeholders | ✅ |
+| `openshift/secrets/` excluded from git | ✅ |
+| `/api/health` returns 200 | ✅ |
+
+---
+
+
 ## 12. Local Kafka Development Stack (Phase 7A)
 
 > ⚠️ **Kafka event production from ArtistHub is NOT yet implemented.**

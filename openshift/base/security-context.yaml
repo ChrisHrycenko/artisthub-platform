@@ -1,0 +1,77 @@
+# openshift/base/security-context.yaml
+#
+# Security context defaults for all ArtistHub workloads.
+#
+# This file documents the intended securityContext fields that will be
+# embedded in every Deployment spec created in Phase 8E.
+# It is also a Kustomize component that can be patched per-overlay.
+#
+# OpenShift restricted SCC compatibility:
+#   The restricted SCC (default for new projects) requires:
+#     - runAsNonRoot: true
+#     - allowPrivilegeEscalation: false
+#     - No privileged containers
+#     - No hostPID/hostNetwork/hostIPC
+#     - No hostPath volumes
+#     - No extra Linux capabilities
+#
+#   The Phase 8B GID-0 pattern ensures filesystem writes work under any
+#   arbitrary UID assigned by OpenShift.  No runAsUser is specified here —
+#   omitting it lets OpenShift assign the UID from the project's range.
+#
+# seccompProfile:
+#   RuntimeDefault is supported on OCP 4.11+ and is the recommended
+#   baseline.  It restricts syscalls to the common safe set.
+#
+# podSecurityContext (spec.securityContext) for all pods:
+#   runAsNonRoot: true
+#   seccompProfile:
+#     type: RuntimeDefault
+#
+# containerSecurityContext (spec.containers[].securityContext) for all containers:
+#   allowPrivilegeEscalation: false
+#   runAsNonRoot: true
+#   capabilities:
+#     drop: ["ALL"]
+#   seccompProfile:
+#     type: RuntimeDefault
+#
+# NOT included:
+#   runAsUser: <any>   — omitted so OpenShift assigns the arbitrary UID
+#   runAsGroup: <any>  — omitted; GID 0 membership comes from the image
+#   privileged: true   — never set
+#   hostNetwork: true  — never set
+#   hostPID: true      — never set
+#
+# These snippets are copied verbatim into Deployment manifests in Phase 8E.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: artisthub-security-reference
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: artisthub-security-reference
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Documentation-only ConfigMap. Records securityContext strategy for
+      all ArtistHub workloads.  Actual securityContext fields are embedded
+      in Deployment specs (Phase 8E).
+data:
+  # Pod-level security context (spec.securityContext)
+  pod.securityContext.runAsNonRoot: "true"
+  pod.securityContext.seccompProfile.type: "RuntimeDefault"
+
+  # Container-level security context (spec.containers[].securityContext)
+  container.securityContext.allowPrivilegeEscalation: "false"
+  container.securityContext.runAsNonRoot: "true"
+  container.securityContext.capabilities.drop: "ALL"
+  container.securityContext.seccompProfile.type: "RuntimeDefault"
+
+  # Explicitly NOT set (reason documented)
+  container.securityContext.runAsUser: "OMITTED — OpenShift assigns arbitrary UID"
+  container.securityContext.privileged: "NEVER — violates restricted SCC"
+  pod.hostNetwork: "NEVER — violates restricted SCC"
+  pod.hostPID: "NEVER — violates restricted SCC"

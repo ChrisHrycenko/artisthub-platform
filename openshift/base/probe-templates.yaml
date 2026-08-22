@@ -1,0 +1,194 @@
+# openshift/base/probe-templates.yaml
+#
+# Probe definitions for ArtistHub workloads.
+#
+# These are documented as a ConfigMap reference only.
+# The actual probes are embedded directly in each Deployment manifest (Phase 8E).
+# This file documents the strategy and threshold rationale in one place.
+#
+# Probe strategy by workload type:
+#
+# ─────────────────────────────────────────────────────────────────────
+# HTTP workloads (backend, frontend) — httpGet probes
+# ─────────────────────────────────────────────────────────────────────
+#
+#   backend:
+#     startupProbe:   httpGet /api/health  — up to 60s for DB init
+#       failureThreshold: 12, periodSeconds: 5
+#     livenessProbe:  httpGet /api/health  — restart if hung
+#       periodSeconds: 30, failureThreshold: 3  (→ 90s before restart)
+#     readinessProbe: httpGet /api/health  — gates traffic; DB connectivity
+#       periodSeconds: 10, failureThreshold: 3  (→ 30s before traffic pulled)
+#
+#   The /api/health endpoint executes `SELECT 1` against the DB.
+#   readiness ≠ liveness: a pod can be live but not-ready (e.g. DB slow).
+#
+#   frontend:
+#     livenessProbe:  httpGet /           (nginx up)
+#       periodSeconds: 30, failureThreshold: 3
+#     readinessProbe: httpGet /           (ready to serve)
+#       periodSeconds: 10, failureThreshold: 3
+#     No startupProbe needed — nginx starts in <2s.
+#
+# ─────────────────────────────────────────────────────────────────────
+# Worker processes (no HTTP) — exec file-age probes
+# ─────────────────────────────────────────────────────────────────────
+#
+#   Phase 8B established touch_heartbeat(name) — workers write
+#   /tmp/<name>_alive on every main-loop iteration.
+#
+#   Heartbeat filenames:
+#     outbox-relay          → /tmp/relay_alive
+#     analytics-consumer    → /tmp/analytics_alive
+#     notification-consumer → /tmp/notification_alive
+#
+#   Liveness probe (exec):
+#     command: ["find", "/tmp", "-name", "<worker>_alive", "-mmin", "-2"]
+#     A non-empty result (file found, age < 2 min) means exit 0.
+#     If the file is stale or absent, find returns empty → exit 1 → failure.
+#
+#   Threshold rationale:
+#     - poll_interval = 5s (outbox relay) or up to ~1s (Kafka consumers)
+#     - heartbeat written every iteration regardless of whether work found
+#     - -mmin -2 = 120s window
+#     - periodSeconds: 60, failureThreshold: 2 → 120s grace
+#     - This tolerates transient Kafka broker unavailability (rebalance,
+#       brief network interruption) without triggering a false restart.
+#
+#   startupProbe (exec):
+#     command: ["test", "-f", "/tmp/<worker>_alive"]
+#     failureThreshold: 12, periodSeconds: 10  → 120s startup budget
+#     Workers must write their first heartbeat within 120s of startup.
+#
+#   No readinessProbe for workers — they are not behind a Service.
+#   readiness has no effect on pods not receiving traffic via a Service.
+#
+# ─────────────────────────────────────────────────────────────────────
+# Probe YAML snippets (copy into Deployment specs in Phase 8E)
+# ─────────────────────────────────────────────────────────────────────
+#
+# backend startupProbe:
+#   httpGet:
+#     path: /api/health
+#     port: 5000
+#   failureThreshold: 12
+#   periodSeconds: 5
+#
+# backend livenessProbe:
+#   httpGet:
+#     path: /api/health
+#     port: 5000
+#   initialDelaySeconds: 0
+#   periodSeconds: 30
+#   failureThreshold: 3
+#   timeoutSeconds: 5
+#
+# backend readinessProbe:
+#   httpGet:
+#     path: /api/health
+#     port: 5000
+#   periodSeconds: 10
+#   failureThreshold: 3
+#   timeoutSeconds: 3
+#
+# frontend livenessProbe:
+#   httpGet:
+#     path: /
+#     port: 8080
+#   periodSeconds: 30
+#   failureThreshold: 3
+#
+# frontend readinessProbe:
+#   httpGet:
+#     path: /
+#     port: 8080
+#   periodSeconds: 10
+#   failureThreshold: 3
+#
+# outbox-relay startupProbe:
+#   exec:
+#     command: ["test", "-f", "/tmp/relay_alive"]
+#   failureThreshold: 12
+#   periodSeconds: 10
+#
+# outbox-relay livenessProbe:
+#   exec:
+#     command: ["find", "/tmp", "-name", "relay_alive", "-mmin", "-2"]
+#   periodSeconds: 60
+#   failureThreshold: 2
+#
+# analytics-consumer startupProbe:
+#   exec:
+#     command: ["test", "-f", "/tmp/analytics_alive"]
+#   failureThreshold: 12
+#   periodSeconds: 10
+#
+# analytics-consumer livenessProbe:
+#   exec:
+#     command: ["find", "/tmp", "-name", "analytics_alive", "-mmin", "-2"]
+#   periodSeconds: 60
+#   failureThreshold: 2
+#
+# notification-consumer startupProbe:
+#   exec:
+#     command: ["test", "-f", "/tmp/notification_alive"]
+#   failureThreshold: 12
+#   periodSeconds: 10
+#
+# notification-consumer livenessProbe:
+#   exec:
+#     command: ["find", "/tmp", "-name", "notification_alive", "-mmin", "-2"]
+#   periodSeconds: 60
+#   failureThreshold: 2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: artisthub-probe-reference
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: artisthub-probe-reference
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Documentation-only ConfigMap. Records probe strategy and YAML
+      snippets for all ArtistHub workloads. Actual probes are embedded
+      in Deployment specs (Phase 8E).
+data:
+  # Probe strategy summary as a machine-readable reference.
+  backend.startup.path: "/api/health"
+  backend.startup.failureThreshold: "12"
+  backend.startup.periodSeconds: "5"
+  backend.liveness.path: "/api/health"
+  backend.liveness.periodSeconds: "30"
+  backend.liveness.failureThreshold: "3"
+  backend.readiness.path: "/api/health"
+  backend.readiness.periodSeconds: "10"
+  backend.readiness.failureThreshold: "3"
+
+  frontend.liveness.path: "/"
+  frontend.liveness.periodSeconds: "30"
+  frontend.readiness.path: "/"
+  frontend.readiness.periodSeconds: "10"
+
+  outbox-relay.heartbeat.file: "/tmp/relay_alive"
+  outbox-relay.liveness.command: "find /tmp -name relay_alive -mmin -2"
+  outbox-relay.liveness.periodSeconds: "60"
+  outbox-relay.liveness.failureThreshold: "2"
+  outbox-relay.startup.command: "test -f /tmp/relay_alive"
+  outbox-relay.startup.failureThreshold: "12"
+
+  analytics-consumer.heartbeat.file: "/tmp/analytics_alive"
+  analytics-consumer.liveness.command: "find /tmp -name analytics_alive -mmin -2"
+  analytics-consumer.liveness.periodSeconds: "60"
+  analytics-consumer.liveness.failureThreshold: "2"
+  analytics-consumer.startup.command: "test -f /tmp/analytics_alive"
+  analytics-consumer.startup.failureThreshold: "12"
+
+  notification-consumer.heartbeat.file: "/tmp/notification_alive"
+  notification-consumer.liveness.command: "find /tmp -name notification_alive -mmin -2"
+  notification-consumer.liveness.periodSeconds: "60"
+  notification-consumer.liveness.failureThreshold: "2"
+  notification-consumer.startup.command: "test -f /tmp/notification_alive"
+  notification-consumer.startup.failureThreshold: "12"

@@ -57,3 +57,11 @@ Thumbs.db
 # Docker                                                               #
 # ------------------------------------------------------------------ #
 docker/data/
+
+# ------------------------------------------------------------------ #
+# OpenShift secrets — NEVER commit real secret manifests              #
+# ------------------------------------------------------------------ #
+openshift/secrets/*.yaml
+openshift/secrets/*.yml
+# Allow the README in the secrets dir to explain what goes there.
+!openshift/secrets/README.md

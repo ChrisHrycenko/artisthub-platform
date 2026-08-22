@@ -1,0 +1,137 @@
+# openshift/base/rbac.yaml
+#
+# Role and RoleBindings for ArtistHub workloads.
+#
+# Design principles:
+#   - Namespace-scoped Role only — no ClusterRole.
+#   - Workloads need to read their own ConfigMap and Secret so the Role
+#     grants GET on configmaps and secrets within the artisthub namespace.
+#   - verbs: ["get"] only — no list/watch/create/update/delete.
+#   - All five ServiceAccounts share this single Role via individual
+#     RoleBindings (auditable per workload).
+#   - No privileged SCC (anyuid, privileged, hostaccess) is requested.
+#     The restricted SCC assigned by default is sufficient.
+#
+# NOT granted:
+#   - cluster-admin
+#   - admin / edit / view at cluster scope
+#   - anyuid SCC
+#   - privileged SCC
+#   - create/update/delete on any resource
+#   - access to secrets in other namespaces
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: artisthub-workload
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Minimal Role allowing ArtistHub workloads to read their own
+      ConfigMap and Secret at runtime.  No write access is granted.
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get"]
+    # Restrict to the ArtistHub-specific objects only.
+    resourceNames:
+      - artisthub-config
+      - artisthub-secrets
+
+---
+# backend RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-workload-backend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+subjects:
+  - kind: ServiceAccount
+    name: sa-backend
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-workload
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# frontend RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-workload-frontend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: artisthub-platform
+subjects:
+  - kind: ServiceAccount
+    name: sa-frontend
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-workload
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# outbox-relay RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-workload-outbox-relay
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: outbox-relay
+    app.kubernetes.io/part-of: artisthub-platform
+subjects:
+  - kind: ServiceAccount
+    name: sa-outbox-relay
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-workload
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# analytics-consumer RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-workload-analytics
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: analytics-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+subjects:
+  - kind: ServiceAccount
+    name: sa-analytics-consumer
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-workload
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# notification-consumer RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-workload-notification
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: notification-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+subjects:
+  - kind: ServiceAccount
+    name: sa-notification-consumer
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-workload
+  apiGroup: rbac.authorization.k8s.io

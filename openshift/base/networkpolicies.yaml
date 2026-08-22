@@ -1,0 +1,367 @@
+# openshift/base/networkpolicies.yaml
+#
+# ArtistHub NetworkPolicies — least-privilege traffic control.
+#
+# Communication matrix enforced by these policies:
+#
+#   Internet / OCP Router
+#         ↓ (port 8080)
+#       frontend
+#         ↓ (port 5000)
+#       backend ←→ (port 5000, internal API calls)
+#         ↓ (port 5432)
+#      postgresql
+#
+#   backend / outbox-relay → Kafka (port 9092, egress)
+#   outbox-relay → postgresql (port 5432)
+#   analytics-consumer → postgresql (port 5432)
+#   analytics-consumer ← Kafka (port 9092, egress)
+#   notification-consumer → postgresql (port 5432)
+#   notification-consumer ← Kafka (port 9092, egress)
+#
+# DNS egress (port 53 UDP/TCP) is permitted for all pods so service
+# names resolve via CoreDNS.  External Confluent Cloud hostname
+# resolution requires this.
+#
+# OpenShift platform traffic (kubelet health probes, OCP monitoring)
+# is preserved by allowing traffic from the openshift-monitoring and
+# kube-system namespaces where needed.
+#
+# Note: Egress to Confluent Cloud requires broad 0.0.0.0/0 egress on
+# ports 9092 and 443 until the Confluent Cloud CIDR/IP ranges are
+# confirmed.  This is documented below and will be tightened in Phase 8D.
+#
+# Apply order: default-deny must be applied first.
+---
+# ------------------------------------------------------------------ #
+# 1. Default deny all ingress and egress for every pod in namespace.  #
+#    All further policies below add explicit allow rules on top.      #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: "Baseline deny-all. Explicit allow policies below override."
+spec:
+  podSelector: {}        # applies to ALL pods in namespace
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ------------------------------------------------------------------ #
+# 2. Allow DNS egress from all pods (UDP+TCP 53).                     #
+#    Required for CoreDNS service name resolution.                    #
+#    Also covers external hostname resolution (Confluent Cloud SR).   #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 3. Allow OCP ingress router → frontend on port 8080.               #
+#    The router runs in openshift-ingress namespace.                  #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-router-to-frontend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-ingress
+      ports:
+        - port: 8080
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 4. Allow frontend → backend on port 5000.                          #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  # Ingress into backend
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: frontend
+      ports:
+        - port: 5000
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 5. Allow backend egress → frontend on 5000 (frontend→backend          #
+#    is ingress-side; this covers backend→backend internal calls).   #
+#    Also allow backend egress → postgresql on 5432.                 #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Egress
+  egress:
+    # Backend → PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Backend → Confluent Cloud Kafka (SASL_SSL) and Schema Registry (HTTPS).
+    # Broad egress until Confluent CIDR confirmed in Phase 8D.
+    # TODO(Phase 8D): restrict to Confluent Cloud IP ranges.
+    - ports:
+        - port: 9092
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 6. Allow postgresql ingress from all ArtistHub workers.            #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-workers-to-postgresql
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: postgresql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: outbox-relay
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: analytics-consumer
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: notification-consumer
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 7. Allow outbox-relay egress → postgresql (5432) + Confluent (9092, 443). #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-outbox-relay-egress
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: outbox-relay
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: outbox-relay
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Confluent Cloud: broad until Phase 8D tightens CIDR.
+    - ports:
+        - port: 9092
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 8. Allow analytics-consumer egress → postgresql + Confluent.       #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-analytics-consumer-egress
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: analytics-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: analytics-consumer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Confluent Cloud: broad until Phase 8D.
+    - ports:
+        - port: 9092
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 9. Allow notification-consumer egress → postgresql + Confluent.    #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notification-consumer-egress
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: notification-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: notification-consumer
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Confluent Cloud: broad until Phase 8D.
+    - ports:
+        - port: 9092
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 10. Allow OCP monitoring → all pods on metrics ports.              #
+#     openshift-monitoring namespace scrapes /metrics where exposed.  #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ocp-monitoring
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-monitoring
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 5000
+          protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# 11. Allow kubelet health probe ingress from host network.          #
+#     Kubelet probes originate from the node IP, not a namespace.    #
+#     ipBlock covers 10.0.0.0/8 (typical OCP node CIDR).            #
+#     Adjust to match the actual cluster node CIDR in production.    #
+# ------------------------------------------------------------------ #
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kubelet-probes
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+  annotations:
+    description: >
+      Allows kubelet liveness/readiness/startup probe traffic from
+      node IPs.  Adjust ipBlock to the actual cluster node CIDR.
+      Placeholder: 10.0.0.0/8 covers typical private RFC1918 node ranges.
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/8
+      ports:
+        - port: 5000
+          protocol: TCP
+        - port: 8080
+          protocol: TCP

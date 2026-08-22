@@ -1,0 +1,29 @@
+# openshift/base/namespace.yaml
+#
+# ArtistHub dedicated Namespace / OpenShift Project.
+#
+# On OpenShift, `oc new-project artisthub` creates a Project object which
+# is backed by a Namespace.  This manifest is the Kubernetes equivalent and
+# is applied first so all subsequent resources land in the correct namespace.
+#
+# The namespace annotation `openshift.io/sa.scc.supplemental-groups` is
+# intentionally absent here — OpenShift manages UID/GID ranges automatically
+# per namespace.  Do not pin them; doing so defeats the arbitrary-UID model
+# validated in Phase 8B.
+#
+# To apply:
+#   kubectl apply -f openshift/base/namespace.yaml
+#   # or, on OpenShift:
+#   oc new-project artisthub --description="ArtistHub platform" --display-name="ArtistHub"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: artisthub
+  labels:
+    app.kubernetes.io/name: artisthub
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    openshift.io/description: "ArtistHub — independent musician platform"
+    openshift.io/display-name: "ArtistHub"

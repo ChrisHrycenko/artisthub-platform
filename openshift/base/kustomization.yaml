@@ -1,0 +1,34 @@
+# openshift/base/kustomization.yaml
+#
+# Kustomize base — lists all base manifests.
+# Overlays in overlays/local and overlays/production extend this base.
+#
+# Resources are applied in the order listed.  namespace.yaml first so the
+# namespace exists before all other resources are created.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: artisthub
+
+# Use `labels` (not the deprecated `commonLabels`) with includeSelectors: false
+# so the common labels are added to metadata only — not injected into
+# NetworkPolicy podSelector matchLabels, Service selectors, or RoleBinding subjects,
+# which would break matching logic if pods don't carry every common label.
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/part-of: artisthub-platform
+    includeSelectors: false
+    includeTemplates: false
+
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - rbac.yaml
+  - configmap.yaml
+  - secrets.example.yaml
+  - networkpolicies.yaml
+  - services.yaml
+  - resource-defaults.yaml
+  - probe-templates.yaml
+  - security-context.yaml

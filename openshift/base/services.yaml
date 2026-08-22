@@ -1,0 +1,110 @@
+# openshift/base/services.yaml
+#
+# Internal ClusterIP Services for ArtistHub workloads.
+#
+# Design:
+#   - backend-svc  : stable DNS address for nginx → Flask proxy (port 5000)
+#   - frontend-svc : stable DNS address for OCP Route → nginx (port 8080)
+#   - Workers (outbox-relay, analytics-consumer, notification-consumer)
+#     are NOT exposed via Services — they consume Kafka and write to
+#     PostgreSQL; no other pod calls into them.
+#   - postgresql-svc : placeholder; actual Service created by the PostgreSQL
+#     operator (Crunchy Data) or StatefulSet in Phase 8E.
+#
+# TLS termination:
+#   All inter-pod traffic is plain HTTP/TCP — TLS is handled at the
+#   OCP Router (edge termination).  The Route is created in Phase 8F.
+#
+# Port naming convention:
+#   Named ports (name: http / name: postgres) enable mTLS policies and
+#   Prometheus scrape target discovery by port name.
+---
+# ------------------------------------------------------------------ #
+# backend ClusterIP Service                                            #
+# Selector targets pods with label app.kubernetes.io/component=backend #
+# ------------------------------------------------------------------ #
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: backend-svc
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: "ClusterIP Service for the Flask/gunicorn backend API"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+      protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# frontend ClusterIP Service                                           #
+# Selector targets pods with label app.kubernetes.io/component=frontend #
+# Route (Phase 8F) will target this Service on port 8080.            #
+# ------------------------------------------------------------------ #
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: frontend-svc
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: "ClusterIP Service for the nginx-unprivileged frontend"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+---
+# ------------------------------------------------------------------ #
+# postgresql ClusterIP Service (placeholder)                          #
+# The Crunchy Data PostgreSQL Operator creates its own primary Service #
+# called `<cluster>-primary`.  This placeholder documents the         #
+# expected DNS name so application config can reference it.           #
+# Replace or delete this in Phase 8E when the operator is deployed.  #
+# ------------------------------------------------------------------ #
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-svc
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: postgresql-svc
+    app.kubernetes.io/component: postgresql
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Placeholder Service for PostgreSQL.  Replace with the Crunchy Data
+      operator primary Service in Phase 8E.  Application DATABASE_URL
+      should reference postgresql-svc:5432 in the artisthub namespace.
+spec:
+  type: ClusterIP
+  # Selector intentionally empty — this is a placeholder.
+  # The operator creates its own primary Service; this documents
+  # the intended DNS name: postgresql-svc.artisthub.svc.cluster.local
+  selector:
+    app.kubernetes.io/component: postgresql
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
