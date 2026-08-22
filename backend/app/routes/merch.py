@@ -152,6 +152,8 @@ def create_merch():
         inventory_quantity=data.get("inventory_quantity"),
     )
     db.session.add(product)
+    # flush() assigns product.id before the event factory reads it.
+    db.session.flush()
     db.session.add(build_artist_merch_created(product))
     db.session.commit()
 

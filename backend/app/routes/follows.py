@@ -101,6 +101,9 @@ def follow_artist():
     db.session.add(follow)
 
     try:
+        # flush() assigns follow.id from the DB auto-increment before the
+        # event factory reads it; the full transaction commits atomically.
+        db.session.flush()
         db.session.add(build_fan_followed_artist(follow))
         db.session.commit()
     except IntegrityError:

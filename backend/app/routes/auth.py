@@ -113,6 +113,8 @@ def artist_register():
         profile_image_url=data.get("profile_image_url"),
     )
     db.session.add(artist)
+    # flush() assigns artist.id before the event factory reads it.
+    db.session.flush()
     db.session.add(build_artist_registered(artist))
     db.session.commit()
 

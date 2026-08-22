@@ -1,30 +1,37 @@
 """
 models/processed_event.py
 
-Consumer-side deduplication store for the Phase 7D analytics consumer.
+Consumer-side deduplication store for Kafka consumers.
 
 Every successfully processed event is recorded here so that re-delivered
-Kafka messages (e.g. after a consumer crash-and-restart) do not alter
-counters twice.
+Kafka messages (e.g. after a consumer crash-and-restart) do not apply the
+same side-effects twice.
 
 Deduplication strategy
 ----------------------
-event_id (UUID v4 from the event envelope) is unique per business event.
-Before applying any side effect the consumer queries this table:
-  - Row absent  → event is new; process it, then insert the row.
-  - Row present → event is a duplicate; skip, commit the Kafka offset.
+The PRIMARY KEY is (event_id, consumer_group).  This is intentional:
 
-The processed-event row and the analytics state update are committed in
+- event_id (UUID v4) uniquely identifies a single *business event*.
+- consumer_group identifies which consumer processed the event.
+
+Using a composite PK allows the analytics consumer and the notification
+consumer to each record their own dedup marker for the same event without
+one consumer's marker blocking the other.
+
+Before applying any side effect, each consumer calls is_duplicate():
+  - Row absent  → event is new for this consumer; process it and insert row.
+  - Row present → event was already handled; skip and commit Kafka offset.
+
+The processed-event row and the consumer's side-effects are committed in
 the same SQLAlchemy transaction so a partial failure cannot leave the DB
-in an inconsistent state (counter updated but dedup marker absent, or
-vice versa).
+in an inconsistent state.
 
 Retention note
 --------------
-Processed event rows accumulate indefinitely in Phase 7D. A periodic
-cleanup job (e.g. DELETE WHERE processed_at < now() - 90d) can be added
-without any schema change; the event_id uniqueness guarantee only needs
-to cover the Kafka topic retention window (max 90 days for identity events).
+Processed event rows accumulate indefinitely. A periodic cleanup job
+(e.g. DELETE WHERE processed_at < now() - 90d) can be added without any
+schema change; the dedup guarantee only needs to cover the Kafka topic
+retention window (max 90 days for identity events).
 """
 
 from datetime import datetime
@@ -35,20 +42,31 @@ class ProcessedEvent(db.Model):
     """
     Deduplication record for a consumer-processed Kafka event.
 
-    Created atomically with the analytics state update inside the same
-    database transaction.
+    The composite primary key (event_id, consumer_group) ensures that
+    the analytics consumer and the notification consumer can each record
+    their own dedup marker for the same event without interference.
     """
 
     __tablename__ = "processed_event"
 
     # ------------------------------------------------------------------ #
-    # Primary key — event_id is globally unique across all event types.   #
+    # Composite primary key                                                #
+    # (event_id, consumer_group) — one row per consumer per event.        #
     # ------------------------------------------------------------------ #
     event_id = db.Column(
         db.String(36),
         primary_key=True,
-        doc="UUID v4 from the Kafka event envelope. Primary key ensures "
-            "uniqueness at the DB level.",
+        doc="UUID v4 from the Kafka event envelope.",
+    )
+    consumer_group = db.Column(
+        db.String(100),
+        primary_key=True,
+        nullable=False,
+        doc="Kafka consumer-group ID that processed this event. "
+            "Part of the composite PK so each consumer tracks dedup "
+            "independently (e.g. artisthub.analytics.v1 and "
+            "artisthub.notifications.v1 process the same event "
+            "without one blocking the other).",
     )
 
     # ------------------------------------------------------------------ #
@@ -91,6 +109,7 @@ class ProcessedEvent(db.Model):
         """Serialise the record to a plain dict for logging / debugging."""
         return {
             "event_id": self.event_id,
+            "consumer_group": self.consumer_group,
             "event_type": self.event_type,
             "topic": self.topic,
             "partition": self.partition,
@@ -102,5 +121,6 @@ class ProcessedEvent(db.Model):
     def __repr__(self) -> str:
         return (
             f"<ProcessedEvent event_id={self.event_id!r} "
+            f"consumer_group={self.consumer_group!r} "
             f"event_type={self.event_type!r}>"
         )

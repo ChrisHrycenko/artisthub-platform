@@ -258,7 +258,9 @@ def apply_analytics_update(
     from app.models.processed_event import ProcessedEvent
 
     # Step 1: deduplication check.
-    if session.get(ProcessedEvent, event_id) is not None:
+    # Composite PK is (event_id, consumer_group) so each consumer has its
+    # own dedup row and does not block other consumer groups.
+    if session.get(ProcessedEvent, (event_id, CONSUMER_GROUP)) is not None:
         logger.info(
             "Duplicate event skipped | event_id=%s event_type=%s",
             event_id, event_type,
@@ -302,6 +304,7 @@ def apply_analytics_update(
     # Step 5: record processed event for deduplication.
     session.add(ProcessedEvent(
         event_id=event_id,
+        consumer_group=CONSUMER_GROUP,
         event_type=event_type,
         topic=topic,
         partition=partition,

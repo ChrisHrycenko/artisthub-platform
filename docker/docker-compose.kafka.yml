@@ -114,54 +114,49 @@ services:
     depends_on:
       redpanda:
         condition: service_healthy
-    # Each topic is created idempotently (--if-not-exists).
+    # Each topic is created idempotently: rpk exits non-zero only on real
+    # errors; "already exists" output is piped to /dev/null and ignored.
     # Partition counts and retention match the approved architecture plan.
-    entrypoint: ["/bin/bash", "-c"]
-    command: |
-      set -e
-
-      BROKER="redpanda:29092"
-
-      echo "=== Creating ArtistHub Kafka topics ==="
-
-      rpk topic create artisthub.social \
-        --brokers $$BROKER \
-        --partitions 6 \
-        --replicas 1 \
-        --topic-config retention.ms=604800000 \
-        --if-not-exists
-      echo "  artisthub.social: 6 partitions, 7-day retention"
-
-      rpk topic create artisthub.catalog \
-        --brokers $$BROKER \
-        --partitions 6 \
-        --replicas 1 \
-        --topic-config retention.ms=2592000000 \
-        --if-not-exists
-      echo "  artisthub.catalog: 6 partitions, 30-day retention"
-
-      rpk topic create artisthub.identity \
-        --brokers $$BROKER \
-        --partitions 3 \
-        --replicas 1 \
-        --topic-config retention.ms=7776000000 \
-        --if-not-exists
-      echo "  artisthub.identity: 3 partitions, 90-day retention"
-
-      rpk topic create artisthub.deadletter \
-        --brokers $$BROKER \
-        --partitions 3 \
-        --replicas 1 \
-        --topic-config retention.ms=1209600000 \
-        --if-not-exists
-      echo "  artisthub.deadletter: 3 partitions, 14-day retention"
-
-      echo ""
-      echo "=== Topic list ==="
-      rpk topic list --brokers $$BROKER
-
-      echo ""
-      echo "=== kafka-init complete ==="
+    #
+    # NOTE: entrypoint + command must both use YAML list items so that
+    # Docker Compose passes "-c" and the script as two separate arguments
+    # to bash.  A bare `command: |` block next to an array entrypoint
+    # causes bash to treat the first word of the block as its process name
+    # (argv[0]) rather than executing the script.
+    entrypoint: ["/bin/bash"]
+    command:
+      - "-c"
+      - |
+        echo "=== Creating ArtistHub Kafka topics ==="
+        rpk topic create artisthub.social \
+          --brokers redpanda:29092 \
+          --partitions 6 \
+          --replicas 1 \
+          --topic-config retention.ms=604800000 2>&1 | grep -v "already exists" || true
+        echo "  artisthub.social: 6 partitions, 7-day retention"
+        rpk topic create artisthub.catalog \
+          --brokers redpanda:29092 \
+          --partitions 6 \
+          --replicas 1 \
+          --topic-config retention.ms=2592000000 2>&1 | grep -v "already exists" || true
+        echo "  artisthub.catalog: 6 partitions, 30-day retention"
+        rpk topic create artisthub.identity \
+          --brokers redpanda:29092 \
+          --partitions 3 \
+          --replicas 1 \
+          --topic-config retention.ms=7776000000 2>&1 | grep -v "already exists" || true
+        echo "  artisthub.identity: 3 partitions, 90-day retention"
+        rpk topic create artisthub.deadletter \
+          --brokers redpanda:29092 \
+          --partitions 3 \
+          --replicas 1 \
+          --topic-config retention.ms=1209600000 2>&1 | grep -v "already exists" || true
+        echo "  artisthub.deadletter: 3 partitions, 14-day retention"
+        echo ""
+        echo "=== Topic list ==="
+        rpk topic list --brokers redpanda:29092
+        echo ""
+        echo "=== kafka-init complete ==="
     restart: "no"
 
   # ------------------------------------------------------------------ #

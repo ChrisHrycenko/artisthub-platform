@@ -405,11 +405,19 @@ SAMPLE_EVENTS: Dict[str, Dict[str, Any]] = {
 
 
 def discover_schemas() -> Dict[str, Dict[str, Any]]:
-    """Return {subject: parsed_schema} for all event .avsc files."""
+    """Return {subject: parsed_schema} for all production event .avsc files.
+
+    Excludes:
+    - common/    — shared envelope reference schema (not a standalone subject)
+    - test_compat/ — compatibility-test schemas only; must never be registered
+                     as production schemas or compared against the SR.
+    """
     pattern = os.path.join(SCHEMAS_DIR, "**", "*.avsc")
     result: Dict[str, Dict[str, Any]] = {}
     for path in sorted(glob.glob(pattern, recursive=True)):
         if os.sep + "common" + os.sep in path:
+            continue
+        if os.sep + "test_compat" + os.sep in path:
             continue
         with open(path) as fh:
             schema = json.load(fh)

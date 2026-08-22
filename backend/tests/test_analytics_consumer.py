@@ -150,6 +150,7 @@ class TestProcessedEventModel:
     def test_create_and_persist(self, db_):
         row = ProcessedEvent(
             event_id=str(uuid.uuid4()),
+            consumer_group="artisthub.analytics.v1",
             event_type="fan.followed.artist",
             topic="artisthub.social",
             partition=0,
@@ -164,6 +165,7 @@ class TestProcessedEventModel:
         eid = str(uuid.uuid4())
         row = ProcessedEvent(
             event_id=eid,
+            consumer_group="artisthub.analytics.v1",
             event_type="fan.followed.artist",
             topic="artisthub.social",
             partition=0,
@@ -174,17 +176,18 @@ class TestProcessedEventModel:
         db_.session.commit()
         d = row.to_dict()
         for k in (
-            "event_id", "event_type", "topic",
+            "event_id", "consumer_group", "event_type", "topic",
             "partition", "offset", "artist_id", "processed_at",
         ):
             assert k in d
 
     def test_primary_key_uniqueness(self, db_):
-        """Inserting duplicate event_id raises an exception."""
+        """Inserting duplicate (event_id, consumer_group) raises an exception."""
         eid = str(uuid.uuid4())
         for _ in range(2):
             db_.session.add(ProcessedEvent(
                 event_id=eid,
+                consumer_group="artisthub.analytics.v1",
                 event_type="fan.followed.artist",
                 topic="artisthub.social",
                 partition=0,
@@ -420,9 +423,10 @@ class TestApplyAnalyticsUpdate:
         assert _get_state(db_, 99) is not None
 
     def test_processed_event_row_is_created(self, db_):
+        from consumers.analytics_consumer import CONSUMER_GROUP
         eid = str(uuid.uuid4())
         self._apply(db_, "fan.followed.artist", artist_id=1, event_id=eid)
-        row = db_.session.get(ProcessedEvent, eid)
+        row = db_.session.get(ProcessedEvent, (eid, CONSUMER_GROUP))
         assert row is not None
         assert row.event_type == "fan.followed.artist"
 

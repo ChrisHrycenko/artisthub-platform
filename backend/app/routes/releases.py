@@ -166,6 +166,8 @@ def create_release():
         release_date=data.get("release_date"),
     )
     db.session.add(release)
+    # flush() assigns release.id before the event factory reads it.
+    db.session.flush()
     db.session.add(build_artist_release_created(release))
     db.session.commit()
 

@@ -142,6 +142,8 @@ def create_post():
         image_url=data.get("image_url"),
     )
     db.session.add(post)
+    # flush() assigns post.id before the event factory reads it.
+    db.session.flush()
     db.session.add(build_artist_post_created(post))
     db.session.commit()
 

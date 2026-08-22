@@ -511,6 +511,7 @@ class TestProcessReleaseCreated:
         assert notifs[0].fan_id == 10
 
     def test_processed_event_row_fields(self, db_):
+        from consumers.notification_consumer import CONSUMER_GROUP
         event = _make_release_event(artist_id=3, release_id=7)
         eid = event["event_id"]
         process_release_created(
@@ -519,7 +520,7 @@ class TestProcessReleaseCreated:
         )
         db_.session.commit()
 
-        pe = db_.session.get(ProcessedEvent, eid)
+        pe = db_.session.get(ProcessedEvent, (eid, CONSUMER_GROUP))
         assert pe is not None
         assert pe.event_type == "artist.release.created"
         assert pe.topic == "artisthub.catalog"

@@ -143,8 +143,12 @@ def discover_schemas() -> Dict[str, str]:
     pattern = os.path.join(SCHEMAS_DIR, "**", "*.avsc")
     result: Dict[str, str] = {}
     for path in sorted(glob.glob(pattern, recursive=True)):
-        # Skip reference-only envelope doc
+        # Skip reference-only envelope doc and test compatibility schemas.
+        # test_compat/ contains schemas used only for compatibility testing —
+        # they must never be registered as production schemas.
         if os.sep + "common" + os.sep in path:
+            continue
+        if os.sep + "test_compat" + os.sep in path:
             continue
         with open(path) as fh:
             raw = fh.read()

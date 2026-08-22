@@ -622,17 +622,22 @@ class TestProcessedEvent:
 
     def test_processed_event_pk_uniqueness(self, pg_db, pg_artist):
         """
-        Inserting two ProcessedEvent rows with the same event_id raises
-        IntegrityError — PK uniqueness is enforced by PostgreSQL.
+        Inserting two ProcessedEvent rows with the same (event_id,
+        consumer_group) raises IntegrityError — composite PK uniqueness.
+
+        Two rows with the same event_id but DIFFERENT consumer_group are
+        allowed (analytics and notification consumers each write their own row).
         """
         from app.models.processed_event import ProcessedEvent
         from sqlalchemy.exc import IntegrityError
         from datetime import datetime, timezone
 
         event_id = str(uuid.uuid4())
+        cg = "artisthub.analytics.v1"
 
         pe1 = ProcessedEvent(
             event_id=event_id,
+            consumer_group=cg,
             event_type="fan.followed.artist",
             topic="artisthub.social",
             partition=0,
@@ -643,8 +648,10 @@ class TestProcessedEvent:
         pg_db.session.add(pe1)
         pg_db.session.commit()
 
+        # Same (event_id, consumer_group) → duplicate → IntegrityError.
         pe2 = ProcessedEvent(
-            event_id=event_id,  # duplicate
+            event_id=event_id,
+            consumer_group=cg,  # same group = duplicate
             event_type="fan.followed.artist",
             topic="artisthub.social",
             partition=0,
@@ -655,6 +662,21 @@ class TestProcessedEvent:
         pg_db.session.add(pe2)
         with pytest.raises(IntegrityError):
             pg_db.session.commit()
+        pg_db.session.rollback()
+
+        # Different consumer_group for same event_id → NOT a duplicate.
+        pe3 = ProcessedEvent(
+            event_id=event_id,
+            consumer_group="artisthub.notifications.v1",
+            event_type="fan.followed.artist",
+            topic="artisthub.social",
+            partition=0,
+            offset=100,
+            artist_id=pg_artist.id,
+            processed_at=datetime.now(timezone.utc),
+        )
+        pg_db.session.add(pe3)
+        pg_db.session.commit()  # should NOT raise
         pg_db.session.rollback()
 
 
