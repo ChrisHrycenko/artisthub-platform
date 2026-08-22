@@ -106,8 +106,27 @@ def create_app(config_name: str | None = None) -> Flask:
         import app.models  # noqa: F401  — registers Artist and Fan tables
 
         # Create all tables that do not yet exist.
-        # In production this is replaced by `flask db upgrade`.
-        db.create_all()
+        #
+        # SQLite (development / testing): db.create_all() is safe and
+        # convenient — SQLite has no migration server, and the in-memory
+        # database used by tests would be empty on every run anyway.
+        #
+        # PostgreSQL (production / Phase 8A+): db.create_all() is
+        # intentionally skipped.  Schema management is handled exclusively
+        # by Flask-Migrate (`flask db upgrade`), which tracks applied
+        # revisions in the alembic_version table.  Calling db.create_all()
+        # alongside flask db upgrade would cause DuplicateTable errors on
+        # first deploy and hide schema drift in subsequent deploys.
+        #
+        # Detection: any DATABASE_URL that does NOT start with 'sqlite'
+        # is treated as a managed database; db.create_all() is skipped.
+        db_url = flask_app.config.get("SQLALCHEMY_DATABASE_URI", "")
+        if db_url.startswith("sqlite") or not db_url:
+            db.create_all()
+        # For PostgreSQL (and any other non-SQLite engine) the caller is
+        # responsible for running `flask db upgrade` before starting the
+        # application.  The db-migrate service in docker-compose.postgres.yml
+        # does this automatically.
 
     # ------------------------------------------------------------------ #
     # 4. Register Blueprints

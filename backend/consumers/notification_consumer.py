@@ -560,6 +560,13 @@ def run(
 
     Runs until interrupted (KeyboardInterrupt / SIGTERM).
 
+    Phase 8B: updates /tmp/notification_alive on every iteration so that
+    OpenShift exec liveness probes can verify the consumer loop is
+    making progress.  The heartbeat is written on every poll() call
+    regardless of whether a message was received, which means an idle
+    consumer (caught up with the topic, waiting for new events) does not
+    trigger a false liveness failure.
+
     Args:
         poll_timeout:  Seconds to wait per poll call.
         _consumer:     Inject a consumer instance (for testing).
@@ -569,6 +576,8 @@ def run(
         raise RuntimeError(
             "confluent-kafka is not installed."
         )  # pragma: no cover
+
+    from app.utils.heartbeat import touch_heartbeat
 
     logging.basicConfig(
         level=logging.INFO,
@@ -590,6 +599,10 @@ def run(
     try:
         while True:
             msg = consumer.poll(timeout=poll_timeout)
+            # Update heartbeat on every iteration — proves the loop is
+            # alive even when the topic is idle (msg is None).
+            touch_heartbeat("notification_alive")
+
             if msg is None:
                 continue
             if msg.error():

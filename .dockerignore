@@ -59,8 +59,13 @@ Thumbs.db
 # ------------------------------------------------------------------ #
 # Directories not needed in the backend image build context           #
 # ------------------------------------------------------------------ #
+# frontend/ is excluded from the backend image (nginx serves it).
+# Phase 8B: negation re-includes frontend/ for Dockerfile.frontend,
+# and docker/nginx-frontend.conf for the nginx COPY step.
 frontend/
+!frontend/
 docker/
+!docker/nginx-frontend.conf
 # Exclude kafka/ tooling but keep kafka/schemas/ — the Avro .avsc files
 # are copied into the image at /app/kafka/schemas/ so the relay and
 # consumers can load schemas without a Schema Registry round-trip on boot.

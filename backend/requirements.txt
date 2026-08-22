@@ -10,3 +10,7 @@ gunicorn==22.0.0
 confluent-kafka==2.15.0
 fastavro==1.12.2
 requests==2.34.2
+# PostgreSQL driver — required when DATABASE_URL=postgresql://...
+# psycopg2-binary bundles libpq so no system package is needed.
+# Use psycopg2 (not binary) in production images built from source.
+psycopg2-binary==2.9.12

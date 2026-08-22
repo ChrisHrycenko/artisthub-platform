@@ -749,6 +749,259 @@ DATABASE_URL=postgresql://user:password@host:5432/artisthub
 
 ---
 
+## 11b. PostgreSQL Production Setup (Phase 8A)
+
+### Why SQLite vs. PostgreSQL
+
+| Aspect | SQLite (default) | PostgreSQL (production) |
+|---|---|---|
+| Setup | Zero config — file on disk | Requires a running server |
+| Concurrent writes | Serialised (single writer) | Full MVCC, many concurrent writers |
+| Scaling | Single host only | Replicas, connection pooling |
+| Schema drift | No migration guard | Alembic tracks every change |
+| Data types | NUMERIC stored as REAL | True fixed-point NUMERIC |
+| Connection pooling | Not applicable | `SQLALCHEMY_POOL_SIZE` controls it |
+| Recommended for | Local dev, tests, CI | Staging, production, OpenShift |
+
+SQLite remains the default for `FLASK_ENV=development` and `FLASK_ENV=testing`.
+PostgreSQL is required for production (Phase 8A+).
+
+---
+
+### Starting the PostgreSQL Compose stack
+
+**Prerequisites:**
+
+1. Copy and edit `.env` with PostgreSQL credentials:
+
+```bash
+cp .env.example .env
+# Set in .env:
+# POSTGRES_DB=artisthub
+# POSTGRES_USER=artisthub
+# POSTGRES_PASSWORD=<strong-password>
+# SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+```
+
+2. Run the stack (PostgreSQL + Flask/nginx, no Kafka):
+
+```bash
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.postgres.yml \
+  up --build
+```
+
+3. Run the full stack (PostgreSQL + Kafka + all workers):
+
+```bash
+docker-compose \
+  -f docker/docker-compose.yml \
+  -f docker/docker-compose.kafka.yml \
+  -f docker/docker-compose.postgres.yml \
+  up --build
+```
+
+The `db-migrate` one-shot service runs `flask db upgrade` automatically before the backend starts.
+
+---
+
+### Required environment variables (PostgreSQL)
+
+| Variable | Required | Description |
+|---|---|---|
+| `SECRET_KEY` | ✅ | Flask session secret — generate with `secrets.token_hex(32)` |
+| `POSTGRES_DB` | ✅ | PostgreSQL database name (e.g. `artisthub`) |
+| `POSTGRES_USER` | ✅ | PostgreSQL username (e.g. `artisthub`) |
+| `POSTGRES_PASSWORD` | ✅ | PostgreSQL password — never commit to git |
+| `DATABASE_URL` | ✅ | `postgresql://<user>:<password>@<host>:5432/<db>` |
+| `DB_POOL_SIZE` | optional | SQLAlchemy pool size per process (default: `5`) |
+| `DB_MAX_OVERFLOW` | optional | Pool overflow allowance (default: `10`) |
+
+---
+
+### Migration commands
+
+```bash
+# Apply all pending migrations (run this on first deploy and after upgrades):
+cd backend && flask db upgrade
+
+# Check current migration head:
+flask db current
+
+# Show migration history:
+flask db history
+
+# Roll back one revision:
+flask db downgrade
+
+# Roll back all the way to the beginning:
+flask db downgrade base
+
+# Generate a new migration after model changes:
+flask db migrate -m "describe the change"
+```
+
+When using Docker Compose, run migrations inside the running backend container:
+
+```bash
+docker-compose -f docker/docker-compose.yml \
+               -f docker/docker-compose.postgres.yml \
+               exec backend flask db upgrade
+```
+
+---
+
+### Migration chain (Phase 8A)
+
+All four revisions must be applied in order for a fresh PostgreSQL deployment:
+
+| Revision | What it creates |
+|---|---|
+| `phase7c_outbox` | `event_outbox` table |
+| `phase7d_analytics` | `analytics_state`, `processed_event` tables |
+| `phase7e_notification` | `notification` table |
+| `78e93118283f` (Phase 8A) | `artist`, `fan`, `follow`, `merch_product`, `music_release`, `social_post` tables |
+
+**Note:** On SQLite, these tables are created by `db.create_all()` inside the
+app factory.  On PostgreSQL, `db.create_all()` is intentionally skipped —
+`flask db upgrade` is the only schema management path.
+
+---
+
+### Rollback guidance
+
+```bash
+# Roll back the Phase 8A core tables migration:
+flask db downgrade phase7e_notification
+
+# Roll back all Phase 7/8 migrations (reverts to empty schema):
+flask db downgrade base
+```
+
+After downgrade, the database schema is empty.  Running `flask db upgrade`
+re-applies all revisions cleanly.  Data is not preserved through a downgrade.
+
+---
+
+### Running PostgreSQL integration tests locally
+
+```bash
+# Requires a running PostgreSQL instance (e.g. the docker-compose.postgres.yml stack):
+export ARTISTHUB_TEST_POSTGRES_URL=postgresql://artisthub:<password>@localhost:5432/artisthub_test
+
+cd backend && pytest tests/test_postgres_integration.py -v
+```
+
+The integration tests are automatically **skipped** when
+`ARTISTHUB_TEST_POSTGRES_URL` is not set, so the standard SQLite suite
+(`pytest --cov=app`) continues to work with no PostgreSQL dependency.
+
+---
+
+### Known differences between SQLite and PostgreSQL
+
+| Item | SQLite behaviour | PostgreSQL behaviour | Impact |
+|---|---|---|---|
+| `NUMERIC(10,2)` price | Stored as REAL (float) | True fixed-point NUMERIC | PostgreSQL is accurate; SQLite may lose sub-cent precision |
+| `datetime.utcnow()` | Naive datetime stored as text | Naive datetime stored as `TIMESTAMP WITHOUT TIME ZONE` | Both work; migrate to `datetime.now(UTC)` in a future phase |
+| `ON DELETE CASCADE` | Requires `PRAGMA foreign_keys=ON` | Enforced by default | PostgreSQL FK cascade is unconditional |
+| Autoincrement | `ROWID`-based AUTOINCREMENT | `SERIAL` / `BIGSERIAL` sequences | Alembic migration generates `SERIAL` on PostgreSQL |
+| Unique constraint naming | Auto-named or unnamed | Must be named for Alembic idempotency | Phase 8A migration adds explicit constraint names |
+| `UNIQUE` on `Artist.email` / `Fan.email` | Works | Named `uq_artist_email` / `uq_fan_email` in Phase 8A migration | No functional difference |
+| Connection pooling | Not applicable (file-based) | `SQLALCHEMY_POOL_SIZE=5`, `MAX_OVERFLOW=10` | Tune based on replica count and PG `max_connections` |
+| `SELECT FOR UPDATE SKIP LOCKED` | Not supported | Supported | Required for multi-relay scaling (future phase) |
+
+---
+
+### Phase 8B — OpenShift Container Hardening
+
+Phase 8B makes all ArtistHub container images compatible with OpenShift's
+**restricted SCC** (arbitrary non-root UID, GID 0 group-ownership pattern).
+No functional changes are made to the event architecture or API.
+
+#### What changed
+
+| Component | Change |
+|---|---|
+| `docker/Dockerfile` | GID 0 ownership (`chgrp -R 0 /app && chmod -R g=u /app`); no named user; `USER 1001`; OpenShift overrides UID at runtime |
+| `docker/Dockerfile.frontend` | **New** — `nginxinc/nginx-unprivileged:1.27-alpine`; listens on port 8080; no CAP_NET_BIND_SERVICE needed |
+| `docker/nginx-frontend.conf` | **New** — port 8080; lazy resolver (`resolver 127.0.0.11 valid=5s`; `set $backend_upstream …`) so nginx starts without backend reachable |
+| `docker/docker-compose.yml` | `web` service now builds from `Dockerfile.frontend`; host port unchanged (8080) |
+| `docker/docker-compose.kafka.yml` | Worker healthchecks use heartbeat file age test instead of `pgrep` |
+| `backend/app/utils/heartbeat.py` | **New** — `touch_heartbeat(name)` / `heartbeat_path(name)`; workers write `/tmp/<name>_alive` on every loop iteration |
+| `outbox_relay.py`, `analytics_consumer.py`, `notification_consumer.py` | `touch_heartbeat(...)` call added in main loop |
+
+#### Arbitrary-UID (GID 0) pattern
+
+OpenShift assigns a random UID (e.g. `1000680000`) to every container at
+runtime — the UID is unpredictable and has no `/etc/passwd` entry.
+The GID 0 pattern ensures write access regardless of UID:
+
+```dockerfile
+RUN chgrp -R 0 /app && chmod -R g=u /app
+USER 1001   # local Docker; OpenShift overrides
+```
+
+Any UID running under GID 0 can write to `/app` and `/app/instance`.
+The frontend image (`nginx-unprivileged`) follows the same pattern — its
+writable paths (`/var/cache/nginx`, `/var/run`, `/tmp`) are pre-configured
+by the upstream image with GID 0 group ownership.
+
+#### Worker liveness probes (heartbeat)
+
+Workers are non-HTTP processes — kubelet exec-probes must check something
+other than an HTTP endpoint.  `touch_heartbeat(name)` writes (or `touch`es)
+`/tmp/<name>_alive` on every main-loop iteration.  The OCP liveness probe
+checks the file age:
+
+```yaml
+livenessProbe:
+  exec:
+    command: ["find", "/tmp", "-name", "relay_alive", "-mmin", "-2"]
+  initialDelaySeconds: 30
+  periodSeconds: 60
+  failureThreshold: 2
+```
+
+The threshold is 120 s (2 × period) — generous enough to tolerate Kafka
+broker unavailability without triggering a false restart.
+
+#### nginx lazy upstream resolution
+
+Stock nginx resolves the `backend` upstream hostname at startup.  If the
+backend container is not yet ready, nginx refuses to start.
+The fix uses a variable-based proxy so DNS is resolved per-request:
+
+```nginx
+resolver 127.0.0.11 valid=5s;   # Docker embedded DNS
+set $backend_upstream http://backend:5000;
+proxy_pass $backend_upstream;
+```
+
+In OpenShift, replace `127.0.0.11` with the cluster CoreDNS address
+(`172.30.0.10`), or use a Kubernetes Service name that CoreDNS can resolve.
+
+#### Phase 8B validation results
+
+| Check | Result |
+|---|---|
+| pytest (430 SQLite + 23 PG) | ✅ all pass |
+| flake8 | ✅ clean |
+| `docker build Dockerfile` | ✅ |
+| `docker build Dockerfile.frontend` | ✅ |
+| All 7 Compose services healthy | ✅ |
+| `GET /api/health` via nginx port 8080 | ✅ `200 {"status":"success"}` |
+| Frontend static files | ✅ `HTTP 200` |
+| `/api/` proxy through nginx | ✅ `200` |
+| Avro schema load from inside container | ✅ `ArtistRegistered` |
+| Heartbeat files in workers | ✅ `/tmp/relay_alive`, `/tmp/analytics_alive`, `/tmp/notification_alive` |
+| Arbitrary UID test (`185432:0`) | ✅ app factory starts cleanly |
+| `Privileged: false` on all containers | ✅ |
+| No root UID running in any container | ✅ (backend 1001, frontend 101) |
+
+---
+
 ## 12. Local Kafka Development Stack (Phase 7A)
 
 > ⚠️ **Kafka event production from ArtistHub is NOT yet implemented.**

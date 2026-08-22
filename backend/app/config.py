@@ -86,12 +86,33 @@ class ProductionConfig(BaseConfig):
     SECRET_KEY and DATABASE_URL MUST be provided as environment variables.
     The app will raise a RuntimeError at startup if SECRET_KEY is the
     insecure default — this is intentional.
+
+    PostgreSQL connection pool tuning
+    ----------------------------------
+    When DATABASE_URL points to PostgreSQL, SQLAlchemy maintains a
+    connection pool.  The defaults below are conservative for a 2-replica
+    backend running against a single PostgreSQL primary:
+      - POOL_SIZE=5  × 4 replicas = 20 connections (well within PG default 100)
+      - MAX_OVERFLOW=10 allows burst capacity without exhausting connections
+      - POOL_PRE_PING=True sends a lightweight SELECT 1 before each checkout
+        so stale connections (e.g. after a PostgreSQL restart) are discarded
+        rather than surfaced as 500 errors to clients.
+
+    These values are no-ops for SQLite (which uses StaticPool with
+    check_same_thread=False and ignores pool settings).
     """
 
     DEBUG: bool = False
     SQLALCHEMY_DATABASE_URI: str = os.environ.get(
         "DATABASE_URL", "sqlite:///artisthub.db"
     )
+
+    # PostgreSQL connection pool settings — ignored by SQLite.
+    SQLALCHEMY_POOL_SIZE: int = int(os.environ.get("DB_POOL_SIZE", "5"))
+    SQLALCHEMY_MAX_OVERFLOW: int = int(
+        os.environ.get("DB_MAX_OVERFLOW", "10")
+    )
+    SQLALCHEMY_POOL_PRE_PING: bool = True
 
     def __init__(self) -> None:
         """Enforce that a real secret key is set in production."""
@@ -103,10 +124,37 @@ class ProductionConfig(BaseConfig):
             )
 
 
+class PostgresTestingConfig(TestingConfig):
+    """
+    PostgreSQL integration test settings.
+
+    Identical to TestingConfig but uses a real PostgreSQL database instead
+    of the in-memory SQLite database.  Activated by passing
+    ``config_name="pg_testing"`` to ``create_app()``.
+
+    The DATABASE_URL must be set as an environment variable before the
+    tests run.  This config is ONLY used by test_postgres_integration.py.
+
+    Example:
+        export ARTISTHUB_TEST_POSTGRES_URL=\\
+            postgresql://artisthub:password@localhost:5432/artisthub_test
+        cd backend && pytest tests/test_postgres_integration.py -v
+    """
+
+    SQLALCHEMY_DATABASE_URI: str = (
+        os.environ.get("ARTISTHUB_TEST_POSTGRES_URL")
+        or os.environ.get("DATABASE_URL")
+        or "postgresql://artisthub:password@localhost:5432/artisthub_test"
+    )
+    # Keep pool settings minimal for test isolation.
+    SQLALCHEMY_POOL_PRE_PING: bool = True
+
+
 # Map string names to config classes so create_app() can select by name.
 config_map = {
     "development": DevelopmentConfig,
     "testing": TestingConfig,
+    "pg_testing": PostgresTestingConfig,
     "production": ProductionConfig,
     "default": DevelopmentConfig,
 }

@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+#
+# docker/Dockerfile.frontend
+#
+# Builds the ArtistHub frontend (nginx) image.
+#
+# Phase 8B — OpenShift arbitrary-UID hardening
+# =============================================
+# Uses nginxinc/nginx-unprivileged which:
+#   - Runs as UID 101 (non-root) by default
+#   - Listens on port 8080 (no CAP_NET_BIND_SERVICE required)
+#   - Pre-configures /var/cache/nginx, /var/run, and /tmp to be
+#     writable without privilege escalation
+#   - Is compatible with OpenShift's restricted SCC out of the box
+#
+# OpenShift note:
+#   OpenShift will assign an arbitrary UID (e.g. 1000680000) at runtime.
+#   The nginx-unprivileged image sets group ownership on its writable
+#   directories to GID 0 so any GID-0 member UID can write to them.
+#   This follows the same GID 0 pattern used for the backend image.
+#
+# Usage (from repo root):
+#   docker build -f docker/Dockerfile.frontend -t artisthub-frontend .
+#
+# Local non-root test:
+#   docker run --user 185432:0 -p 8080:8080 artisthub-frontend
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+
+# Copy the Phase 8B nginx configuration (listens on 8080, non-root paths).
+# Replaces the default.conf that ships with the image.
+COPY docker/nginx-frontend.conf /etc/nginx/conf.d/default.conf
+
+# Copy the ArtistHub frontend static files.
+# These are read-only at runtime — the non-root nginx process only reads
+# from /usr/share/nginx/html, never writes.
+COPY frontend/ /usr/share/nginx/html/
+
+# The nginx-unprivileged image already uses USER 101.
+# We do not override it — any user directive here would require a non-root
+# UID, and OpenShift will override it at runtime regardless.
+
+# Document the port.
+EXPOSE 8080
+
+# The nginx-unprivileged image already provides a suitable default CMD.
+# Explicit CMD is omitted to defer to the image default:
+#   ["nginx", "-g", "daemon off;"]

@@ -16,11 +16,18 @@
 #
 # Services:
 #   backend  Flask/gunicorn API server (port 5000, internal only)
-#   web      nginx — serves frontend static files + proxies /api/* (port 8080)
+#   web      nginx-unprivileged — serves frontend + proxies /api/* (port 8080)
 #
-# The SQLite database file is persisted in a named Docker volume so
-# data survives container restarts. In a production upgrade, replace
-# SQLite with a `db` service (PostgreSQL image) and update DATABASE_URL.
+# Phase 8B changes:
+#   - `web` service now builds from docker/Dockerfile.frontend instead of
+#     using the stock nginx:1.25-alpine image.  The new image is based on
+#     nginxinc/nginx-unprivileged and listens on port 8080 inside the
+#     container.  Host mapping is unchanged: http://localhost:8080.
+#   - Backend Dockerfile now uses the GID 0 / arbitrary-UID pattern for
+#     OpenShift compatibility.  Local Docker still runs as UID 1001.
+#   - The SQLite database file is persisted in a named Docker volume so
+#     data survives container restarts.  In a production upgrade, replace
+#     SQLite with a `db` service (PostgreSQL image) and update DATABASE_URL.
 
 version: "3.9"
 
@@ -49,30 +56,36 @@ services:
       - "5000"
     restart: unless-stopped
     healthcheck:
-      # CMD-SHELL runs the command in a shell so the || operator works.
       test: ["CMD-SHELL", "curl -f http://localhost:5000/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      # 20 s gives gunicorn time to bind, initialise SQLite, and respond on
-      # slow hosts — matches the Dockerfile HEALTHCHECK --start-period=15s
-      # with 5 s of headroom.
       start_period: 20s
 
   # ------------------------------------------------------------------ #
-  # nginx — static files + API reverse proxy                            #
+  # nginx-unprivileged — static files + API reverse proxy              #
+  #                                                                     #
+  # Phase 8B: switched from nginx:1.25-alpine to a custom image built  #
+  # from docker/Dockerfile.frontend (nginxinc/nginx-unprivileged base).#
+  # The container listens on port 8080 inside the container (no root   #
+  # required).  Host mapping is unchanged: http://localhost:8080.      #
   # ------------------------------------------------------------------ #
   web:
-    image: nginx:1.25-alpine
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
     ports:
-      - "8080:80"               # access the app at http://localhost:8080
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ../frontend:/usr/share/nginx/html:ro
+      - "8080:8080"             # access the app at http://localhost:8080
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   db-data:

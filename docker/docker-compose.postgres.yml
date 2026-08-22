@@ -1,0 +1,154 @@
+# docker/docker-compose.postgres.yml
+#
+# Phase 8A — PostgreSQL Compose override for ArtistHub local validation.
+#
+# This file is a Docker Compose OVERRIDE. It extends the base stack
+# (docker-compose.yml) and the Kafka overlay (docker-compose.kafka.yml)
+# to swap the SQLite volume for a real PostgreSQL container.
+#
+# The SQLite default (docker-compose.yml) is NOT removed or altered.
+# Both stacks can coexist in the same repository.
+#
+# Usage — PostgreSQL + Flask/nginx only:
+#   docker-compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.postgres.yml \
+#     up --build
+#
+# Usage — PostgreSQL + Kafka + all workers:
+#   docker-compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.kafka.yml \
+#     -f docker/docker-compose.postgres.yml \
+#     up --build
+#
+# Environment variable prerequisites (copy .env.example → .env and set):
+#   POSTGRES_DB       database name  (e.g. artisthub)
+#   POSTGRES_USER     database user  (e.g. artisthub)
+#   POSTGRES_PASSWORD strong password (never commit to git)
+#   DATABASE_URL      postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+#
+# Schema bootstrap:
+#   After first `up`, run migrations inside the backend container:
+#     docker-compose ... exec backend flask db upgrade
+#   This applies all Alembic revisions (phase7c_outbox → phase7d_analytics
+#   → phase7e_notification) against the PostgreSQL database.
+#
+# Rollback:
+#   docker-compose ... exec backend flask db downgrade base
+#   (Drops all managed tables; does NOT touch the postgres container itself.)
+#
+# Notes:
+#   - The db-data SQLite volume defined in docker-compose.yml is overridden:
+#     the backend container's /app/instance volume mount is dropped here so
+#     SQLite is not created when DATABASE_URL points to PostgreSQL.
+#   - outbox-relay, analytics-consumer, and notification-consumer also have
+#     their db-data mounts replaced for consistency.
+#   - The one-shot 'db-migrate' service runs `flask db upgrade` automatically
+#     on stack startup, after the postgres healthcheck passes.
+
+version: "3.9"
+
+services:
+
+  # ------------------------------------------------------------------ #
+  # PostgreSQL 16 — production-compatible development database          #
+  # ------------------------------------------------------------------ #
+  postgres:
+    image: postgres:16-alpine
+    container_name: artisthub-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-artisthub}
+      POSTGRES_USER: ${POSTGRES_USER:-artisthub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Expose on host for psql / pgAdmin access during development.
+      # In production this port is NOT exposed (NetworkPolicy controls access).
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-artisthub} -d ${POSTGRES_DB:-artisthub}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------ #
+  # One-shot migration runner — applies `flask db upgrade` on startup.  #
+  # Runs after postgres is healthy; exits 0 when all migrations pass.   #
+  # Other services depend on this to ensure the schema exists before    #
+  # accepting connections.                                               #
+  # ------------------------------------------------------------------ #
+  db-migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["flask", "db", "upgrade"]
+    env_file:
+      - ../.env
+    environment:
+      FLASK_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ------------------------------------------------------------------ #
+  # Override backend — connect to PostgreSQL instead of SQLite volume.  #
+  # The db-data volume mount from docker-compose.yml is replaced by     #
+  # removing it (volumes: [] drops all mounts for this service).        #
+  # DATABASE_URL is set explicitly to target the postgres service.      #
+  # ------------------------------------------------------------------ #
+  backend:
+    volumes: []          # Discard the SQLite db-data volume mount.
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------------ #
+  # Override outbox-relay — same PostgreSQL DATABASE_URL.               #
+  # ------------------------------------------------------------------ #
+  outbox-relay:
+    volumes: []
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ #
+  # Override analytics-consumer — same PostgreSQL DATABASE_URL.         #
+  # ------------------------------------------------------------------ #
+  analytics-consumer:
+    volumes: []
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------ #
+  # Override notification-consumer — same PostgreSQL DATABASE_URL.      #
+  # ------------------------------------------------------------------ #
+  notification-consumer:
+    volumes: []
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+    driver: local

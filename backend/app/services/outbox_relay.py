@@ -193,11 +193,19 @@ def run(
 
     Runs until interrupted (KeyboardInterrupt / SIGTERM).
 
+    Phase 8B: updates /tmp/relay_alive on every loop iteration so that
+    OpenShift exec liveness probes can verify the process is making
+    progress.  The heartbeat is written regardless of whether any outbox
+    rows were found, so an idle relay (no pending events) does not trigger
+    a false liveness failure.
+
     Args:
         poll_interval: Seconds to sleep between poll cycles.
         batch_size:    Max outbox rows to process per cycle.
         _producer:     Inject a producer instance (for testing).
     """
+    from app.utils.heartbeat import touch_heartbeat
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -215,6 +223,9 @@ def run(
             count = poll_and_publish(flask_app, producer, batch_size)
             if count:
                 logger.info("Relay: published %d event(s)", count)
+            # Update heartbeat after each poll cycle — proves the loop is
+            # alive, not just that the Python process exists.
+            touch_heartbeat("relay_alive")
             time.sleep(poll_interval)
     except KeyboardInterrupt:
         logger.info("Outbox relay stopping (KeyboardInterrupt).")
