@@ -1,0 +1,153 @@
+# openshift/base/deployments/frontend.yaml
+#
+# ArtistHub frontend Deployment — nginx-unprivileged
+#
+# Phase 8E — Workload Deployments
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Image: artisthub-frontend (Phase 8B hardened image)
+# ─────────────────────────────────────────────────────────────────────────
+# Based on nginxinc/nginx-unprivileged:1.27-alpine.
+# Runs as UID 101 (non-root) and listens on port 8080.
+# No CAP_NET_BIND_SERVICE required.
+# Compatible with OpenShift restricted SCC.
+#
+# The production overlay patches this image name to the OCP internal
+# registry:
+#   name:    artisthub-frontend
+#   newName: image-registry.openshift-image-registry.svc:5000/artisthub/frontend
+#   newTag:  <release-tag>
+#
+# ─────────────────────────────────────────────────────────────────────────
+# nginx upstream DNS — OpenShift CoreDNS
+# ─────────────────────────────────────────────────────────────────────────
+# The Phase 8E image uses nginx-openshift.conf (baked into the image in
+# Phase 8E) which resolves the backend via CoreDNS (172.30.0.10) using the
+# full Service DNS name: backend-svc.artisthub.svc.cluster.local:5000.
+# This replaces the Docker Compose service name "backend" and Docker DNS
+# resolver (127.0.0.11) used in nginx-frontend.conf.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Replica count: 2
+# ─────────────────────────────────────────────────────────────────────────
+# nginx serving pre-compressed static files is stateless.  2 replicas
+# provide basic availability during rolling restarts.  nginx does not need
+# shared state between pods — each request is fully independent.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Environment variables received:
+# ─────────────────────────────────────────────────────────────────────────
+# The frontend (nginx) does not consume application environment variables
+# at runtime.  The nginx configuration is baked into the image.
+# No envFrom is required for nginx itself.
+#
+# Note: The ConfigMap/Secret envFrom blocks are intentionally omitted here.
+# nginx does not read Flask environment variables.  The CORS_ORIGINS setting
+# is consumed by the backend, not the frontend proxy.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: "nginx-unprivileged frontend for ArtistHub"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: artisthub-platform
+    spec:
+      # ------------------------------------------------------------------ #
+      # Identity                                                             #
+      # ------------------------------------------------------------------ #
+      serviceAccountName: sa-frontend
+      automountServiceAccountToken: false
+
+      # ------------------------------------------------------------------ #
+      # Pod-level security context                                           #
+      # ------------------------------------------------------------------ #
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ------------------------------------------------------------------ #
+      # Containers                                                           #
+      # ------------------------------------------------------------------ #
+      containers:
+        - name: frontend
+          image: artisthub-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # ---------------------------------------------------------------- #
+          # Container-level security context                                  #
+          # ---------------------------------------------------------------- #
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            # runAsUser intentionally omitted — OpenShift assigns from UID range.
+
+          # ---------------------------------------------------------------- #
+          # Probes                                                            #
+          # ---------------------------------------------------------------- #
+          # startupProbe: nginx starts in under 2 seconds, but allow 30s to
+          # cover image pull latency on first schedule.
+          startupProbe:
+            httpGet:
+              path: /
+              port: 8080
+            failureThreshold: 6
+            periodSeconds: 5
+            timeoutSeconds: 3
+
+          # readinessProbe: gates traffic via the Service (Phase 8F Route).
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # livenessProbe: restarts the pod if nginx becomes unresponsive.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          # ---------------------------------------------------------------- #
+          # Resource requests/limits (Phase 8C defaults)                     #
+          # Tune from Phase 8H metrics and Phase 8J load tests.              #
+          # ---------------------------------------------------------------- #
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
+      restartPolicy: Always

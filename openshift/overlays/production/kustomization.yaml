@@ -53,13 +53,16 @@ labels:
     includeSelectors: false
     includeTemplates: false
 
-# Image registry overrides — replace placeholders before deployment.
-# These are applied to Deployment manifests in Phase 8E.
-# Example (fill in real values):
-#   images:
-#     - name: artisthub-backend
-#       newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend
-#       newTag: v0.3.0
-#     - name: artisthub-frontend
-#       newName: image-registry.openshift-image-registry.svc:5000/artisthub/frontend
-#       newTag: v0.3.0
+# Image registry overrides — Phase 8E Deployments.
+# Replace <REGISTRY> and <TAG> with real values before deployment.
+# All three backend-derived workloads (backend, outbox-relay, analytics-consumer,
+# notification-consumer, db-migrate Job) use the same backend image.
+#
+# Uncomment and fill in real values:
+# images:
+#   - name: artisthub-backend
+#     newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend
+#     newTag: v0.3.0
+#   - name: artisthub-frontend
+#     newName: image-registry.openshift-image-registry.svc:5000/artisthub/frontend
+#     newTag: v0.3.0

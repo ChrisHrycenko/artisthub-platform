@@ -66,6 +66,7 @@ frontend/
 !frontend/
 docker/
 !docker/nginx-frontend.conf
+!docker/nginx-openshift.conf
 # Exclude kafka/ tooling but keep kafka/schemas/ — the Avro .avsc files
 # are copied into the image at /app/kafka/schemas/ so the relay and
 # consumers can load schemas without a Schema Registry round-trip on boot.

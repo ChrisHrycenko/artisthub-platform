@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+#
+# docker/Dockerfile.frontend.openshift
+#
+# Builds the ArtistHub frontend (nginx) image for OpenShift deployment.
+#
+# Phase 8E — OpenShift workload Deployment
+# =========================================
+# Identical to docker/Dockerfile.frontend except for the nginx configuration:
+#
+#   Dockerfile.frontend          → nginx-frontend.conf
+#     DNS resolver: 127.0.0.11 (Docker embedded DNS)
+#     Backend upstream: http://backend:5000
+#     Used by: docker-compose.yml (local Docker Compose)
+#
+#   Dockerfile.frontend.openshift → nginx-openshift.conf
+#     DNS resolver: 172.30.0.10 (OpenShift CoreDNS / kube-dns)
+#     Backend upstream: http://backend-svc.artisthub.svc.cluster.local:5000
+#     Used by: OpenShift Deployment (this image)
+#
+# IMPORTANT: Both images are functionally identical in every other way.
+# The only difference is the nginx upstream DNS resolver address and the
+# backend Service DNS name.
+#
+# Usage (from repo root):
+#   docker build -f docker/Dockerfile.frontend.openshift \
+#                -t artisthub-frontend .
+#
+# Local non-root test (approximates OpenShift arbitrary-UID behaviour):
+#   docker run --user 185432:0 -p 8080:8080 artisthub-frontend
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+
+# Copy the Phase 8E OpenShift nginx configuration.
+# Uses CoreDNS resolver (172.30.0.10) and backend-svc Service DNS name.
+# Replaces the default.conf that ships with the image.
+COPY docker/nginx-openshift.conf /etc/nginx/conf.d/default.conf
+
+# Copy the ArtistHub frontend static files.
+# These are read-only at runtime — the non-root nginx process only reads
+# from /usr/share/nginx/html, never writes.
+COPY frontend/ /usr/share/nginx/html/
+
+# The nginx-unprivileged image already uses USER 101.
+# OpenShift overrides the UID at runtime while keeping GID 0.
+
+# Document the port.
+EXPOSE 8080
+
+# The nginx-unprivileged image already provides a suitable default CMD.
+# ["nginx", "-g", "daemon off;"]

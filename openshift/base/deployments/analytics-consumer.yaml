@@ -1,0 +1,177 @@
+# openshift/base/deployments/analytics-consumer.yaml
+#
+# ArtistHub analytics consumer Deployment
+#
+# Phase 8E — Workload Deployments
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Consumer group: artisthub.analytics.v1
+# Subscribed topics: artisthub.social (6p), artisthub.catalog (6p),
+#                   artisthub.identity (3p)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Replica count: 2
+# ─────────────────────────────────────────────────────────────────────────
+# PARTITION / PARALLELISM ANALYSIS:
+#
+#   Topic partitions (from Phase 8D smoke test):
+#     artisthub.social:    6 partitions
+#     artisthub.catalog:   6 partitions
+#     artisthub.identity:  3 partitions
+#
+#   With a single consumer group (artisthub.analytics.v1) subscribed to
+#   all three topics, Kafka distributes partitions across consumer group
+#   members using the RangeAssignor or CooperativeStickyAssignor.
+#
+#   Total partition assignments across all three topics = 15.
+#   Practical maximum parallelism = 15 replicas (one consumer per partition).
+#
+#   For Phase 8E we start with 2 replicas:
+#     - Low message volume in MVP does not justify more replicas.
+#     - 2 replicas provide a basic failover unit without triggering
+#       unnecessary Kafka rebalances.
+#     - Scale to 6 or 15 in Phase 8I (KEDA) based on Kafka lag metrics.
+#
+#   NOTE: Adding more replicas than total partitions (15) is wasted —
+#   excess consumers sit idle in the consumer group.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Idempotency is preserved:
+#   - ProcessedEvent(event_id, consumer_group) deduplication table
+#   - Manual offset commits (enable.auto.commit=false)
+#   - Offset committed only after DB transaction commits successfully
+#   Multiple replicas are safe because Kafka partition assignment is
+#   exclusive — only one consumer in a group processes a given partition.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# No Service — the analytics consumer is a Kafka pull worker.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Heartbeat probe — /tmp/analytics_alive
+# ─────────────────────────────────────────────────────────────────────────
+# Written on every consumer poll loop iteration.  Kafka consumers loop
+# approximately every 1s regardless of whether messages are present.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Environment variables received:
+# ─────────────────────────────────────────────────────────────────────────
+# From ConfigMap (artisthub-config):
+#   FLASK_ENV, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISMS,
+#   KAFKA_CONSUMER_GROUP, ANALYTICS_MAX_RETRIES, ANALYTICS_RETRY_BACKOFF,
+#   KAFKA_SCHEMAS_DIR, DB_POOL_SIZE, DB_MAX_OVERFLOW
+#
+# From Secret (artisthub-secrets):
+#   SECRET_KEY, DATABASE_URL, KAFKA_BOOTSTRAP_SERVERS,
+#   CONFLUENT_API_KEY, CONFLUENT_API_SECRET,
+#   SCHEMA_REGISTRY_URL, SCHEMA_REGISTRY_API_KEY, SCHEMA_REGISTRY_API_SECRET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-consumer
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: analytics-consumer
+    app.kubernetes.io/component: analytics-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Kafka analytics consumer for artisthub.analytics.v1 group.
+      Subscribed to artisthub.social, artisthub.catalog, artisthub.identity.
+      Max parallelism: 15 replicas (total partitions across subscribed topics).
+      Phase 8E: 2 replicas. Scale to 6+ in Phase 8I via KEDA.
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: analytics-consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: analytics-consumer
+        app.kubernetes.io/component: analytics-consumer
+        app.kubernetes.io/part-of: artisthub-platform
+    spec:
+      # ------------------------------------------------------------------ #
+      # Identity                                                             #
+      # ------------------------------------------------------------------ #
+      serviceAccountName: sa-analytics-consumer
+      automountServiceAccountToken: false
+
+      # ------------------------------------------------------------------ #
+      # Pod-level security context                                           #
+      # ------------------------------------------------------------------ #
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ------------------------------------------------------------------ #
+      # Containers                                                           #
+      # ------------------------------------------------------------------ #
+      containers:
+        - name: analytics-consumer
+          image: artisthub-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "run_analytics_consumer.py"]
+
+          # ---------------------------------------------------------------- #
+          # Container-level security context                                  #
+          # ---------------------------------------------------------------- #
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+
+          # ---------------------------------------------------------------- #
+          # Environment                                                       #
+          # ---------------------------------------------------------------- #
+          envFrom:
+            - configMapRef:
+                name: artisthub-config
+            - secretRef:
+                name: artisthub-secrets
+
+          # ---------------------------------------------------------------- #
+          # Probes — heartbeat file /tmp/analytics_alive                     #
+          # ---------------------------------------------------------------- #
+          startupProbe:
+            exec:
+              command: ["test", "-f", "/tmp/analytics_alive"]
+            failureThreshold: 12
+            periodSeconds: 10
+
+          livenessProbe:
+            exec:
+              command:
+                - find
+                - /tmp
+                - -name
+                - analytics_alive
+                - -mmin
+                - "-2"
+            periodSeconds: 60
+            failureThreshold: 2
+            timeoutSeconds: 5
+
+          # No readinessProbe — not behind a Service.
+
+          # ---------------------------------------------------------------- #
+          # Resource requests/limits (Phase 8C defaults)                     #
+          # Tune from Phase 8H metrics and Phase 8I KEDA configuration.      #
+          # ---------------------------------------------------------------- #
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+      restartPolicy: Always

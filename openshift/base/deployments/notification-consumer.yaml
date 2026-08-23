@@ -1,0 +1,172 @@
+# openshift/base/deployments/notification-consumer.yaml
+#
+# ArtistHub notification consumer Deployment
+#
+# Phase 8E — Workload Deployments
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Consumer group: artisthub.notifications.v1
+# Subscribed topics: artisthub.catalog (6 partitions)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Replica count: 2
+# ─────────────────────────────────────────────────────────────────────────
+# PARTITION / PARALLELISM ANALYSIS:
+#
+#   Topic partitions (from Phase 8D smoke test):
+#     artisthub.catalog:  6 partitions
+#
+#   Practical maximum parallelism = 6 replicas (one consumer per partition).
+#
+#   For Phase 8E we start with 2 replicas:
+#     - Low message volume in MVP does not justify more replicas.
+#     - 2 replicas provide basic failover.
+#     - Scale to 6 in Phase 8I (KEDA) based on Kafka consumer lag metrics.
+#
+#   NOTE: Adding more than 6 replicas for this group is wasted — excess
+#   consumers sit idle in the consumer group without assigned partitions.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Idempotency is preserved:
+#   - ProcessedEvent(event_id, consumer_group) deduplication table
+#   - Notification table UNIQUE(event_id, fan_id) constraint (DB layer)
+#   - Manual offset commits (enable.auto.commit=false)
+#   Multiple replicas are safe — Kafka partition assignment is exclusive.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Email/SMS delivery is NOT implemented in Phase 8E.
+# ─────────────────────────────────────────────────────────────────────────
+# The consumer creates Notification rows with status='pending'.
+# A future delivery worker will read these rows and send actual
+# email/SMS/push notifications.  No external delivery calls are made here.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# No Service — notification consumer is a Kafka pull worker.
+# ─────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Heartbeat probe — /tmp/notification_alive
+# ─────────────────────────────────────────────────────────────────────────
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Environment variables received:
+# ─────────────────────────────────────────────────────────────────────────
+# From ConfigMap (artisthub-config):
+#   FLASK_ENV, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISMS,
+#   NOTIF_CONSUMER_GROUP, NOTIF_MAX_RETRIES, NOTIF_RETRY_BACKOFF,
+#   KAFKA_SCHEMAS_DIR, DB_POOL_SIZE, DB_MAX_OVERFLOW
+#
+# From Secret (artisthub-secrets):
+#   SECRET_KEY, DATABASE_URL, KAFKA_BOOTSTRAP_SERVERS,
+#   CONFLUENT_API_KEY, CONFLUENT_API_SECRET,
+#   SCHEMA_REGISTRY_URL, SCHEMA_REGISTRY_API_KEY, SCHEMA_REGISTRY_API_SECRET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-consumer
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: notification-consumer
+    app.kubernetes.io/component: notification-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Kafka notification consumer for artisthub.notifications.v1 group.
+      Subscribed to artisthub.catalog.
+      Max parallelism: 6 replicas (catalog partition count).
+      Phase 8E: 2 replicas. Scale to 6 in Phase 8I via KEDA.
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: notification-consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-consumer
+        app.kubernetes.io/component: notification-consumer
+        app.kubernetes.io/part-of: artisthub-platform
+    spec:
+      # ------------------------------------------------------------------ #
+      # Identity                                                             #
+      # ------------------------------------------------------------------ #
+      serviceAccountName: sa-notification-consumer
+      automountServiceAccountToken: false
+
+      # ------------------------------------------------------------------ #
+      # Pod-level security context                                           #
+      # ------------------------------------------------------------------ #
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ------------------------------------------------------------------ #
+      # Containers                                                           #
+      # ------------------------------------------------------------------ #
+      containers:
+        - name: notification-consumer
+          image: artisthub-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "run_notification_consumer.py"]
+
+          # ---------------------------------------------------------------- #
+          # Container-level security context                                  #
+          # ---------------------------------------------------------------- #
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+
+          # ---------------------------------------------------------------- #
+          # Environment                                                       #
+          # ---------------------------------------------------------------- #
+          envFrom:
+            - configMapRef:
+                name: artisthub-config
+            - secretRef:
+                name: artisthub-secrets
+
+          # ---------------------------------------------------------------- #
+          # Probes — heartbeat file /tmp/notification_alive                  #
+          # ---------------------------------------------------------------- #
+          startupProbe:
+            exec:
+              command: ["test", "-f", "/tmp/notification_alive"]
+            failureThreshold: 12
+            periodSeconds: 10
+
+          livenessProbe:
+            exec:
+              command:
+                - find
+                - /tmp
+                - -name
+                - notification_alive
+                - -mmin
+                - "-2"
+            periodSeconds: 60
+            failureThreshold: 2
+            timeoutSeconds: 5
+
+          # No readinessProbe — not behind a Service.
+
+          # ---------------------------------------------------------------- #
+          # Resource requests/limits (Phase 8C defaults)                     #
+          # Tune from Phase 8H metrics and Phase 8I KEDA configuration.      #
+          # ---------------------------------------------------------------- #
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+      restartPolicy: Always

@@ -32,3 +32,11 @@ resources:
   - resource-defaults.yaml
   - probe-templates.yaml
   - security-context.yaml
+  # Phase 8E — migration Job (run before Deployments; see jobs/db-migrate.yaml)
+  - jobs/db-migrate.yaml
+  # Phase 8E — workload Deployments
+  - deployments/backend.yaml
+  - deployments/frontend.yaml
+  - deployments/outbox-relay.yaml
+  - deployments/analytics-consumer.yaml
+  - deployments/notification-consumer.yaml

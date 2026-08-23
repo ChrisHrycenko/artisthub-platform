@@ -1,0 +1,188 @@
+# openshift/base/deployments/backend.yaml
+#
+# ArtistHub backend Deployment — Flask / gunicorn
+#
+# Phase 8E — Workload Deployments
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Replica count: 2
+# ─────────────────────────────────────────────────────────────────────────
+# 2 replicas are safe because:
+#   - Database is PostgreSQL (not SQLite): multiple pods share the same
+#     persistent DB instance.  Flask-SQLAlchemy connection pool handles
+#     concurrent access.
+#   - Flask session cookies are server-signed with SECRET_KEY.  Any replica
+#     can verify any session token because SECRET_KEY is shared via the same
+#     Secret object.  No sticky sessions or shared-memory session store is
+#     required.
+#   - No in-memory state is shared between requests; all persistent state
+#     lives in PostgreSQL.
+#   - The /api/health readiness probe ensures traffic is only routed to
+#     replicas that have successfully connected to the database.
+#
+# SQLite-era assumptions that could break multi-replica operation:
+#   - SQLite (sqlite:///artisthub.db) is a file-based DB; two pods writing
+#     to the same SQLite file would corrupt it.  DATABASE_URL must point to
+#     PostgreSQL in multi-replica deployments.  ProductionConfig reads
+#     DATABASE_URL from the Secret — the Secret must set a PostgreSQL DSN.
+#   - db.create_all() in create_app() is gated behind a SQLite check:
+#       if db_url.startswith("sqlite") or not db_url: db.create_all()
+#     With a PostgreSQL DATABASE_URL, db.create_all() is skipped.
+#     Schema migrations are run by the db-migrate Job (Phase 8E) instead.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Image: artisthub-backend (Phase 8B hardened image)
+# ─────────────────────────────────────────────────────────────────────────
+# The image name is a logical reference.  In production, patch via the
+# production overlay images: block:
+#   name:    artisthub-backend
+#   newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend
+#   newTag:  <release-tag>
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Environment variables received:
+# ─────────────────────────────────────────────────────────────────────────
+# From ConfigMap (artisthub-config):
+#   FLASK_ENV, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISMS,
+#   KAFKA_CONSUMER_GROUP, OUTBOX_POLL_INTERVAL, OUTBOX_BATCH_SIZE,
+#   ANALYTICS_MAX_RETRIES, ANALYTICS_RETRY_BACKOFF,
+#   NOTIF_MAX_RETRIES, NOTIF_RETRY_BACKOFF,
+#   KAFKA_SCHEMAS_DIR, DB_POOL_SIZE, DB_MAX_OVERFLOW, CORS_ORIGINS
+#
+# From Secret (artisthub-secrets):
+#   SECRET_KEY, DATABASE_URL, KAFKA_BOOTSTRAP_SERVERS,
+#   CONFLUENT_API_KEY, CONFLUENT_API_SECRET,
+#   SCHEMA_REGISTRY_URL, SCHEMA_REGISTRY_API_KEY, SCHEMA_REGISTRY_API_SECRET
+#
+# The backend only needs these.  All ConfigMap/Secret keys are loaded via
+# envFrom so the pod environment always stays in sync when the ConfigMap or
+# Secret is updated (rolling restart required to pick up Secret changes).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: "Flask/gunicorn backend API for ArtistHub"
+    # Phase 8H: add Prometheus scrape annotations here.
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: artisthub-platform
+    spec:
+      # ------------------------------------------------------------------ #
+      # Identity                                                             #
+      # ------------------------------------------------------------------ #
+      serviceAccountName: sa-backend
+      automountServiceAccountToken: false
+
+      # ------------------------------------------------------------------ #
+      # Pod-level security context                                           #
+      # OpenShift assigns an arbitrary UID from the project UID range.      #
+      # GID 0 filesystem permissions (Phase 8B) allow that UID to write.   #
+      # ------------------------------------------------------------------ #
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ------------------------------------------------------------------ #
+      # Containers                                                           #
+      # ------------------------------------------------------------------ #
+      containers:
+        - name: backend
+          # Logical image name — overridden by the production overlay.
+          image: artisthub-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+
+          # ---------------------------------------------------------------- #
+          # Container-level security context                                  #
+          # ---------------------------------------------------------------- #
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            # runAsUser is intentionally omitted — OpenShift assigns from
+            # the project UID range automatically.
+
+          # ---------------------------------------------------------------- #
+          # Environment — non-secret config from ConfigMap                   #
+          # ---------------------------------------------------------------- #
+          envFrom:
+            - configMapRef:
+                name: artisthub-config
+            - secretRef:
+                name: artisthub-secrets
+
+          # ---------------------------------------------------------------- #
+          # Probes                                                            #
+          # ---------------------------------------------------------------- #
+          # startupProbe: allows up to 60s for gunicorn to initialise +
+          #   connect to PostgreSQL before liveness/readiness take effect.
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            failureThreshold: 12
+            periodSeconds: 5
+            timeoutSeconds: 3
+
+          # readinessProbe: gates traffic via the Service.  A replica is
+          # removed from load balancing if /api/health returns non-200
+          # (e.g. PostgreSQL unreachable).  readiness ≠ liveness: a pod
+          # can be live but temporarily not-ready under DB load.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # livenessProbe: restarts the pod if it becomes unresponsive.
+          # Longer period than readiness to avoid thrashing during
+          # transient DB slowness.
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          # ---------------------------------------------------------------- #
+          # Resource requests/limits (Phase 8C defaults)                     #
+          # Tune from Phase 8H Prometheus metrics and Phase 8J load tests.   #
+          # ---------------------------------------------------------------- #
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      # ------------------------------------------------------------------ #
+      # Restart policy (Deployment default — restartPolicy: Always)         #
+      # ------------------------------------------------------------------ #
+      restartPolicy: Always
