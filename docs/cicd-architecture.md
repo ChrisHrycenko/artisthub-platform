@@ -495,3 +495,91 @@ The CI pipeline does not run live Confluent smoke tests on every build, because:
 5. **Image signing** — design `cosign` key management strategy; add signing step after push
 6. **Confluent smoke workflow** — manual trigger, authentication + topic metadata only, no business-event production
 7. **Branch protection rules** — enforce status checks (`lint`, `test-sqlite`, `test-postgres`, `schema-check`) before merge to `main`
+
+---
+
+## Phase 8H — Supply Chain Security: SBOM + Image Signing
+
+### SBOM Generation (syft)
+
+Phase 8H adds `sbom-backend` and `sbom-frontend` jobs to `release.yml`.
+
+**Tool:** `anchore/sbom-action/download-syft`  
+**Format:** CycloneDX JSON (`.cdx.json`)  
+**Trigger:** After each image build, in parallel with Trivy scan  
+**Storage:** GitHub Actions artifacts, 90-day retention  
+
+```
+release.yml job graph (Phase 8H):
+
+lint ──┐
+test-sqlite ──┤
+test-postgres ──┼──→ build-backend ──→ sbom-backend (parallel)
+schema-check ──┤                  └──→ scan-backend ──┐
+               │                                       ├──→ publish ──→ sign-images
+               └──→ build-frontend ──→ sbom-frontend  │
+                                  └──→ scan-frontend ──┘
+```
+
+**Artifact names:**
+- `sbom-backend-<sha>` → `sbom-backend.cdx.json`
+- `sbom-frontend-<sha>` → `sbom-frontend.cdx.json`
+
+### Image Signing (cosign keyless)
+
+Phase 8H adds a `sign-images` job to `release.yml` that runs after `publish`.
+
+**Tool:** `sigstore/cosign-installer` + `cosign sign`  
+**Method:** Keyless OIDC — GitHub Actions OIDC token as identity certificate  
+**No stored signing key:** Short-lived certificate via Sigstore / Fulcio  
+**Signature storage:** OCI artifact alongside image in registry  
+
+The `sign-images` job requires `id-token: write` permission:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+```
+
+**Skip condition:** `sign-images` is skipped when `REGISTRY_HOST` is not configured (same condition as `publish`). This allows CI to run in environments without a registry.
+
+**Verification:**
+
+```bash
+cosign verify <image>@<digest> \
+  --certificate-identity-regexp="https://github.com/YOUR_ORG/.*" \
+  --certificate-oidc-issuer="https://token.actions.githubusercontent.com"
+```
+
+**⚠ VERIFICATION STATUS: BLOCKED** — no live registry connected. Signing workflow is in place and will run when `REGISTRY_*` secrets are configured.
+
+### actionlint
+
+Phase 8H adds an `actionlint` job as job `0` in `ci.yml`. It runs before `lint`, `test-sqlite`, etc. and validates all workflow YAML files:
+
+```yaml
+- uses: rhysd/actionlint@v1.7.7
+  with:
+    flags: "-color"
+```
+
+Catches: invalid `${{ }}` expressions, missing secrets, job dependency cycles, undefined context fields.
+
+### Confluent Cloud Smoke Workflow
+
+`confluent-smoke.yml` provides a **manual-only** metadata check against Confluent Cloud.
+
+- **Trigger:** `workflow_dispatch` only — never on push or schedule
+- **Mode:** `SMOKE_METADATA_ONLY=1` — no event production or consumption
+- **Checks:** TLS connectivity, SASL auth, topic metadata, Schema Registry reachability
+- **Required secrets:** `KAFKA_BOOTSTRAP_SERVERS`, `CONFLUENT_API_KEY`, `CONFLUENT_API_SECRET`, `SCHEMA_REGISTRY_URL`, `SCHEMA_REGISTRY_API_KEY`, `SCHEMA_REGISTRY_API_SECRET`
+
+### Phase 8H CI/CD Known Limitations
+
+| Limitation | Notes |
+|---|---|
+| SBOM signing not implemented | SBOMs are generated but not signed with cosign. Attestation via `cosign attest` is Phase 8I/8J scope. |
+| Cosign verification BLOCKED | No live registry. Signing runs in the workflow; `cosign verify` requires a live registry. |
+| actionlint pinned to v1.7.7 | Upgrade annually; use SHA pinning for stricter supply chain control. |
+| Confluent credentials not in CI | Live smoke test requires manual trigger; credentials should stay in `production` Environment only. |

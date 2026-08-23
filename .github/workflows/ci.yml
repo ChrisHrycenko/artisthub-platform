@@ -27,6 +27,25 @@ on:
 jobs:
 
   # ──────────────────────────────────────────────────────────────────────
+  # 0. Workflow lint (actionlint) — Phase 8H
+  # Validates all GitHub Actions workflow YAML files for syntax and
+  # semantic errors before running any CI steps.
+  # ──────────────────────────────────────────────────────────────────────
+  actionlint:
+    name: Lint — GitHub Actions workflows (actionlint)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1.7.7
+        with:
+          # Fail on any actionlint error.
+          # Warnings are reported but do not block the pipeline.
+          flags: "-color"
+
+  # ──────────────────────────────────────────────────────────────────────
   # 1. Lint
   # ──────────────────────────────────────────────────────────────────────
   lint:

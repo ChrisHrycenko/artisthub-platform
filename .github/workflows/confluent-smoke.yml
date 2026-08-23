@@ -1,0 +1,146 @@
+# .github/workflows/confluent-smoke.yml
+#
+# Phase 8H — Confluent Cloud manual smoke test workflow.
+#
+# PURPOSE
+# -------
+# This workflow provides a manual, on-demand check that:
+#   1. The GitHub Actions runner can reach Confluent Cloud bootstrap endpoints.
+#   2. SASL_SSL authentication succeeds with the configured credentials.
+#   3. All expected topics exist with the correct partition counts:
+#        artisthub.social:    6 partitions
+#        artisthub.catalog:   6 partitions
+#        artisthub.identity:  3 partitions
+#        artisthub.deadletter: 3 partitions
+#   4. Schema Registry is reachable and responds to metadata requests.
+#
+# WHAT THIS WORKFLOW DOES NOT DO
+# --------------------------------
+# - Does NOT produce any business events to Confluent Cloud topics.
+# - Does NOT consume any messages from live topics.
+# - Does NOT modify topic configuration, schemas, or ACLs.
+# - Does NOT require any ArtistHub application to be running.
+#
+# This is a metadata-only connectivity check.  It is safe to run against
+# the production Confluent cluster at any time.
+#
+# TRIGGER
+# -------
+# Manual only: workflow_dispatch.
+# Never triggered automatically by push or schedule.
+# This prevents accidental credential exposure on untrusted forks.
+#
+# CREDENTIALS
+# -----------
+# All Confluent credentials are read from GitHub repository/environment
+# secrets.  They are NEVER printed, logged, or echoed by this workflow.
+# If any secret is missing, the workflow exits with a descriptive error.
+#
+# Required secrets (set in GitHub → Settings → Secrets → Actions):
+#   KAFKA_BOOTSTRAP_SERVERS    e.g. pkc-XXXXX.us-east-1.aws.confluent.cloud:9092
+#   CONFLUENT_API_KEY          SASL username
+#   CONFLUENT_API_SECRET       SASL password
+#   SCHEMA_REGISTRY_URL        e.g. https://psrc-XXXXX.us-east-1.aws.confluent.cloud
+#   SCHEMA_REGISTRY_API_KEY    SR basic-auth username
+#   SCHEMA_REGISTRY_API_SECRET SR basic-auth password
+
+name: Confluent Cloud Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for running smoke test (optional, for audit trail)"
+        required: false
+        default: "Manual connectivity check"
+
+# No concurrency limit — smoke tests are fast and low-risk.
+
+jobs:
+  confluent-smoke:
+    name: Confluent Cloud — metadata-only smoke test
+    runs-on: ubuntu-latest
+
+    # Do not inherit environment secrets automatically.
+    # Explicit env: mapping ensures credentials are only available to steps
+    # that need them, and makes the credential requirement visible.
+    env:
+      # Never echo these values — they are read-only within this scope.
+      KAFKA_BOOTSTRAP_SERVERS:    ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+      KAFKA_SECURITY_PROTOCOL:    "SASL_SSL"
+      KAFKA_SASL_MECHANISMS:      "PLAIN"
+      CONFLUENT_API_KEY:          ${{ secrets.CONFLUENT_API_KEY }}
+      CONFLUENT_API_SECRET:       ${{ secrets.CONFLUENT_API_SECRET }}
+      SCHEMA_REGISTRY_URL:        ${{ secrets.SCHEMA_REGISTRY_URL }}
+      SCHEMA_REGISTRY_API_KEY:    ${{ secrets.SCHEMA_REGISTRY_API_KEY }}
+      SCHEMA_REGISTRY_API_SECRET: ${{ secrets.SCHEMA_REGISTRY_API_SECRET }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Confluent and HTTP dependencies
+        run: |
+          pip install --upgrade pip
+          pip install confluent-kafka==2.15.0 requests==2.34.2 fastavro==1.12.2
+
+      - name: Verify credentials are set
+        # This step fails fast with a clear error if any required secret is
+        # missing, rather than letting the smoke test produce a cryptic error.
+        run: |
+          MISSING=()
+          [ -z "$KAFKA_BOOTSTRAP_SERVERS" ]    && MISSING+=(KAFKA_BOOTSTRAP_SERVERS)
+          [ -z "$CONFLUENT_API_KEY" ]          && MISSING+=(CONFLUENT_API_KEY)
+          [ -z "$CONFLUENT_API_SECRET" ]       && MISSING+=(CONFLUENT_API_SECRET)
+          [ -z "$SCHEMA_REGISTRY_URL" ]        && MISSING+=(SCHEMA_REGISTRY_URL)
+          [ -z "$SCHEMA_REGISTRY_API_KEY" ]   && MISSING+=(SCHEMA_REGISTRY_API_KEY)
+          [ -z "$SCHEMA_REGISTRY_API_SECRET" ] && MISSING+=(SCHEMA_REGISTRY_API_SECRET)
+
+          if [ ${#MISSING[@]} -gt 0 ]; then
+            echo "ERROR: The following secrets are not configured:"
+            for s in "${MISSING[@]}"; do
+              echo "  - $s"
+            done
+            echo ""
+            echo "Set these in: GitHub → Settings → Secrets and variables → Actions"
+            exit 2
+          fi
+          echo "All required secrets are configured."
+
+      - name: Run metadata-only smoke test
+        # The --metadata-only flag (if supported by the script) restricts the
+        # smoke test to topic listing, partition counts, and SR connectivity.
+        # It does NOT produce events or consume messages.
+        #
+        # The existing confluent-smoke-test.py supports metadata checks.
+        # We set SMOKE_METADATA_ONLY=1 which the script checks to skip
+        # producer/consumer tests.
+        run: |
+          echo "Starting Confluent Cloud metadata smoke test..."
+          echo "Reason: ${{ github.event.inputs.reason }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo ""
+          # SMOKE_METADATA_ONLY=1 tells confluent-smoke-test.py to skip
+          # producer/consumer checks (checks 4-7) and only run connectivity
+          # + topic metadata + Schema Registry checks (checks 1-3).
+          SMOKE_METADATA_ONLY=1 python3 kafka/confluent-smoke-test.py
+
+      - name: Write workflow summary
+        if: always()
+        run: |
+          echo "## Confluent Cloud Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | ${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run | ${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Checks performed:** TLS connectivity · SASL auth · topic metadata · partition counts · Schema Registry reachability" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Checks NOT performed:** event production · message consumption · schema registration · ACL changes" >> "$GITHUB_STEP_SUMMARY"

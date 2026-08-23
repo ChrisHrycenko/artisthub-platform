@@ -1,0 +1,14 @@
+# openshift/base/monitoring/kustomization.yaml
+#
+# Kustomize component for Phase 8H monitoring manifests.
+# Referenced by openshift/base/kustomization.yaml as a resource directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: artisthub
+
+resources:
+  - servicemonitor-backend.yaml
+  - podmonitor-workers.yaml
+  - prometheusrule.yaml
+  - grafana-dashboards.yaml

@@ -89,6 +89,7 @@ metadata:
     description: >
       Transactional outbox relay: polls event_outbox, publishes to Confluent
       Cloud Kafka. Phase 8F: 2 replicas safe via SELECT FOR UPDATE SKIP LOCKED.
+      Phase 8H: exposes Prometheus metrics on port 9090 via prometheus_client.
 spec:
   # Phase 8F: replicas raised from 1 → 2.
   # SELECT FOR UPDATE SKIP LOCKED in app/services/outbox_relay.py ensures
@@ -120,6 +121,9 @@ spec:
       # ------------------------------------------------------------------ #
       serviceAccountName: sa-outbox-relay
       automountServiceAccountToken: false
+      # ------------------------------------------------------------------ #
+      # Pod annotations — Prometheus scrape discovery                       #
+      # ------------------------------------------------------------------ #
 
       # ------------------------------------------------------------------ #
       # Pod-level security context                                           #
@@ -138,6 +142,13 @@ spec:
           imagePullPolicy: IfNotPresent
           # Override the default gunicorn CMD with the relay entry point.
           command: ["python", "run_relay.py"]
+          # Phase 8H: metrics port for Prometheus scraping by PodMonitor.
+          # Workers have no HTTP ingress Service; port is exposed directly
+          # to the openshift-monitoring namespace via allow-ocp-monitoring policy.
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
 
           # ---------------------------------------------------------------- #
           # Container-level security context                                  #

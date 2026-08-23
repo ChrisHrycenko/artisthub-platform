@@ -1,0 +1,254 @@
+# openshift/base/monitoring/prometheusrule.yaml
+#
+# Phase 8H — PrometheusRule: alerting rules for ArtistHub.
+#
+# These rules are evaluated by the OpenShift User Workload Monitoring
+# Prometheus instance.  Alerts fire via the AlertManager that is
+# co-located with the platform Prometheus.
+#
+# Alert naming convention: ArtistHub<Component><Condition>
+# Severity levels:
+#   critical  — page immediately (PagerDuty / immediate on-call)
+#   warning   — ticket + dashboard (Slack / next business day)
+#   info      — dashboard annotation only
+#
+# Threshold rationale:
+#   All thresholds below are conservative MVP starting points.
+#   Tune after baseline metrics are collected in Phase 8H.
+#   Phase 8J load testing will produce data to calibrate alert thresholds.
+#
+# Runbooks:
+#   TODO: Create docs/runbooks/<alert-name>.md for each alert.
+#   Phase 8H scope: define alerts; runbook links are placeholders.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: artisthub-alerts
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+    # Required by OpenShift User Workload Monitoring to pick up this rule.
+    openshift.io/prometheus-rule-evaluation-scope: leaf-prometheus
+  annotations:
+    description: >
+      Phase 8H alerting rules for ArtistHub platform.
+      Covers: backend error rate, outbox backlog, Kafka consumer dead-letter,
+      and worker heartbeat (inferred from PodReady condition).
+spec:
+  groups:
+
+    # ── Backend HTTP ────────────────────────────────────────────────────────
+    - name: artisthub.backend
+      interval: 30s
+      rules:
+
+        # Alert when the backend HTTP 5xx error rate exceeds 1% over 5 minutes.
+        # This threshold is conservative for an MVP with low traffic.
+        # Recalibrate after Phase 8J load testing.
+        - alert: BackendHighErrorRate
+          expr: |
+            (
+              sum(rate(flask_http_request_exceptions_total{app="artisthub-backend"}[5m]))
+              /
+              sum(rate(flask_http_request_total{app="artisthub-backend"}[5m]))
+            ) > 0.01
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub backend HTTP error rate > 1%"
+            description: >
+              The Flask backend is returning 5xx errors at a rate above 1%
+              over the past 5 minutes.  This may indicate a database issue,
+              a code regression, or excessive request volume.
+            runbook_url: "https://github.com/YOUR_ORG/artisthub/docs/runbooks/BackendHighErrorRate.md"
+
+        # Alert when the backend has zero healthy replicas (all pods failing
+        # readiness).  This is a critical outage condition.
+        - alert: BackendNoHealthyReplicas
+          expr: |
+            kube_deployment_status_replicas_ready{namespace="artisthub",deployment="backend"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArtistHub backend: no healthy replicas"
+            description: >
+              All backend Pods are failing readiness probes.  The platform is
+              effectively down.  Check Pod events: oc get events -n artisthub.
+
+    # ── Outbox relay ────────────────────────────────────────────────────────
+    - name: artisthub.outbox
+      interval: 60s
+      rules:
+
+        # Alert when the outbox backlog exceeds 500 pending events.
+        # A large backlog indicates the relay is failing to publish or
+        # is not running.  Producers are still writing events normally.
+        - alert: OutboxBacklogHigh
+          expr: |
+            artisthub_relay_outbox_backlog > 500
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub outbox backlog > 500 events"
+            description: >
+              The event_outbox table has {{ $value }} pending rows
+              (published_at IS NULL).  This may indicate the outbox relay
+              is down, Kafka is unavailable, or publish errors are accumulating.
+              Check relay logs: oc logs -l app.kubernetes.io/component=outbox-relay
+
+        # Alert when the oldest pending outbox row is more than 10 minutes old.
+        # Stale events indicate the relay is stuck or Kafka is persistently
+        # unavailable.
+        - alert: OutboxOldestEventStale
+          expr: |
+            artisthub_relay_outbox_oldest_age_seconds > 600
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub: oldest pending outbox event > 10 minutes"
+            description: >
+              The oldest pending outbox row is {{ $value | humanizeDuration }} old.
+              Events are not being published to Kafka.  This may cause
+              downstream consumers (analytics, notifications) to fall behind.
+
+        # Alert on any relay Kafka publish failures in the last 15 minutes.
+        # Even a single publish failure is worth investigating.
+        - alert: OutboxPublishFailures
+          expr: |
+            increase(artisthub_relay_publish_failures_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub outbox relay: Kafka publish failures detected"
+            description: >
+              The outbox relay has recorded {{ $value }} Kafka publish failure(s)
+              in the past 15 minutes.  Affected events will be retried.
+              Check relay logs for last_error details.
+
+    # ── Kafka consumers ─────────────────────────────────────────────────────
+    - name: artisthub.consumers
+      interval: 60s
+      rules:
+
+        # Alert when analytics dead-letter messages accumulate.
+        # Dead-letter events indicate persistent deserialization or DB failures.
+        - alert: AnalyticsDeadLetterMessagesDetected
+          expr: |
+            increase(artisthub_analytics_messages_deadlettered_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub analytics: dead-letter messages detected"
+            description: >
+              {{ $value }} analytics message(s) were dead-lettered in the past
+              15 minutes.  Check artisthub.deadletter topic for details.
+              Common causes: Avro schema mismatch, missing payload fields,
+              persistent DB errors.
+
+        # Alert when notification dead-letter messages accumulate.
+        - alert: NotificationDeadLetterMessagesDetected
+          expr: |
+            increase(artisthub_notification_messages_deadlettered_total[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub notifications: dead-letter messages detected"
+            description: >
+              {{ $value }} notification message(s) were dead-lettered in the
+              past 15 minutes.  Check artisthub.deadletter and consumer logs.
+
+        # Alert when analytics consumer has no ready pods (consumer lag will
+        # grow indefinitely without any consumer).
+        - alert: AnalyticsConsumerDown
+          expr: |
+            kube_deployment_status_replicas_ready{
+              namespace="artisthub",
+              deployment="analytics-consumer"
+            } == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArtistHub analytics consumer: no healthy replicas"
+            description: >
+              All analytics consumer Pods are failing.  Kafka consumer lag will
+              grow.  Events will be reprocessed when the consumer restarts
+              (idempotency via ProcessedEvent table).
+
+        # Alert when notification consumer has no ready pods.
+        - alert: NotificationConsumerDown
+          expr: |
+            kube_deployment_status_replicas_ready{
+              namespace="artisthub",
+              deployment="notification-consumer"
+            } == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArtistHub notification consumer: no healthy replicas"
+            description: >
+              All notification consumer Pods are failing.  Fan notification rows
+              will not be created until the consumer recovers.
+
+    # ── Workers (heartbeat inferred via pod ready state) ────────────────────
+    - name: artisthub.workers
+      interval: 60s
+      rules:
+
+        # Alert when the outbox relay has no ready pods.
+        # (Heartbeat exec probes mark the pod as liveness-failing, which
+        # eventually produces a restart; kube state metrics track readiness.)
+        - alert: OutboxRelayDown
+          expr: |
+            kube_deployment_status_replicas_ready{
+              namespace="artisthub",
+              deployment="outbox-relay"
+            } == 0
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArtistHub outbox relay: no healthy replicas"
+            description: >
+              All outbox relay Pods are failing.  Outbox events will accumulate
+              in event_outbox until the relay recovers.  DB writes remain
+              available; no data is lost.  Backlog will be processed on recovery.
+
+        # Alert when any worker Pod has been in a restart loop.
+        # CrashLoopBackOff indicates a recurring failure (config error,
+        # DB unreachable, OOM, etc.).
+        - alert: WorkerCrashLoopBackOff
+          expr: |
+            kube_pod_container_status_waiting_reason{
+              namespace="artisthub",
+              reason="CrashLoopBackOff"
+            } == 1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArtistHub worker Pod in CrashLoopBackOff"
+            description: >
+              Pod {{ $labels.pod }} container {{ $labels.container }} is in
+              CrashLoopBackOff.  Check Pod logs: oc logs {{ $labels.pod }} -n artisthub

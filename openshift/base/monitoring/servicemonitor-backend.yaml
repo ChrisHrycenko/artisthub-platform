@@ -1,0 +1,58 @@
+# openshift/base/monitoring/servicemonitor-backend.yaml
+#
+# Phase 8H — ServiceMonitor for the ArtistHub backend.
+#
+# The Flask backend exposes GET /metrics on port 5000 via
+# prometheus_flask_exporter.  OpenShift User Workload Monitoring scrapes
+# this endpoint using a ServiceMonitor that targets the backend-svc Service.
+#
+# ServiceMonitor (not PodMonitor) is appropriate here because the backend
+# has a ClusterIP Service (backend-svc) and multiple replicas behind it.
+# Prometheus will discover all backend Pod IPs through the Service's
+# Endpoints object.
+#
+# Scrape interval: 30s (production default; reduce to 15s in Phase 8J/load test)
+# Metrics path:    /metrics (prometheus_flask_exporter default)
+# Port:            http (named port on backend-svc — maps to 5000)
+#
+# Label matching:
+#   The ServiceMonitor selector must match the backend-svc labels exactly.
+#   backend-svc carries: app.kubernetes.io/component=backend
+#
+# OpenShift User Workload Monitoring requirement:
+#   openshift.io/cluster-monitoring: "true" on the namespace enables UWM.
+#   See openshift/base/namespace.yaml — this label is set there.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend-metrics
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Phase 8H: Scrapes /metrics from the Flask backend via the backend-svc
+      Service.  Provides HTTP request rate, latency, error rate per endpoint.
+spec:
+  # Match the backend-svc Service by its component label.
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  endpoints:
+    - port: http        # Named port on backend-svc (maps to 5000)
+      path: /metrics
+      interval: 30s
+      # Honor labels set by prometheus_flask_exporter on each metric.
+      honorLabels: false
+      # Relabelling: drop high-cardinality path variants to keep series count
+      # bounded.  /api/artists/123 and /api/artists/456 both become
+      # /api/artists/<id> — prometheus_flask_exporter groups them automatically
+      # via the group_by parameter (set in PrometheusMetrics initialisation).
+      relabelings:
+        - sourceLabels: [__address__]
+          targetLabel: instance
+          action: replace

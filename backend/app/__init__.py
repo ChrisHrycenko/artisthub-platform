@@ -7,19 +7,34 @@ create_app() is the single entry point for constructing the Flask
 application. It:
   1. Loads configuration from the config_map using FLASK_ENV.
   2. Initialises all Flask extensions
-     (db, login_manager, bcrypt, migrate, CORS).
+     (db, login_manager, bcrypt, migrate, CORS, Prometheus metrics).
   3. Imports all models so SQLAlchemy is aware of every table.
   4. Registers all Blueprints under their /api/* prefixes.
   5. Configures Flask-Login's user_loader for Artist and Fan sessions.
+  6. Attaches correlation-ID middleware (before_request / after_request).
 
 Nothing is instantiated at module level — extensions live in extensions.py.
 This pattern makes it trivial to spin up a test instance with a different
 config (e.g. TestingConfig with an in-memory SQLite DB) without touching
 any other file.
+
+Phase 8H additions
+------------------
+- PrometheusMetrics (prometheus_flask_exporter) is initialised when
+  TESTING is False.  It auto-instruments every Flask route and exposes
+  GET /metrics (Prometheus text format, port 5000).
+  Metrics are disabled in TESTING mode to prevent registry conflicts
+  between parallel test processes.
+- Correlation-ID middleware generates a UUID for every incoming request,
+  attaches it to ``flask.g.correlation_id``, and injects it into the
+  X-Correlation-ID response header.  Worker processes that originate
+  outbox events should propagate this ID through the outbox payload's
+  existing ``correlation_id`` field.
 """
 
 import os
-from flask import Flask
+import uuid
+from flask import Flask, g, request
 from flask_cors import CORS
 
 from app.config import config_map
@@ -97,6 +112,55 @@ def create_app(config_name: str | None = None) -> Flask:
         origins=flask_app.config.get("CORS_ORIGINS", []),
         supports_credentials=True,
     )
+
+    # Prometheus metrics — disabled in TESTING to avoid registry conflicts
+    # between parallel test workers.  In all other environments the exporter
+    # auto-instruments every route and exposes GET /metrics on port 5000.
+    # Labels are kept low-cardinality: only http_method, http_status, path.
+    # High-cardinality values (user IDs, artist IDs, etc.) are NEVER used as
+    # label values — doing so would create an unbounded time series.
+    if not flask_app.config.get("TESTING", False):
+        try:
+            from prometheus_flask_exporter import PrometheusMetrics
+            PrometheusMetrics(
+                flask_app,
+                # Expose /metrics directly (no prefix) so Prometheus scrape
+                # config can use the standard path.
+                default_labels={"app": "artisthub-backend"},
+                # Exclude the /metrics endpoint itself from instrumentation
+                # to avoid recursive self-referential time series.
+                excluded_paths=["/metrics"],
+            )
+        except ImportError:  # pragma: no cover
+            flask_app.logger.warning(
+                "prometheus_flask_exporter not installed; "
+                "/metrics endpoint will not be available."
+            )
+
+    # ------------------------------------------------------------------ #
+    # Correlation-ID middleware                                            #
+    # ------------------------------------------------------------------ #
+    # Every request is assigned a UUID correlation ID.  The ID is stored on
+    # flask.g so route handlers and model code can read it.  It is also
+    # echoed in the X-Correlation-ID response header so callers can match
+    # requests to log lines.
+    @flask_app.before_request
+    def _assign_correlation_id() -> None:
+        """Generate or propagate a correlation ID for the current request."""
+        # Honour a forwarded correlation ID from the caller (e.g. nginx,
+        # API gateway, integration tests).  Generate a new one if absent.
+        correlation_id = request.headers.get(
+            "X-Correlation-ID", str(uuid.uuid4())
+        )
+        g.correlation_id = correlation_id
+
+    @flask_app.after_request
+    def _add_correlation_header(response):
+        """Attach the correlation ID to every response header."""
+        correlation_id = getattr(g, "correlation_id", None)
+        if correlation_id:
+            response.headers["X-Correlation-ID"] = correlation_id
+        return response
 
     # ------------------------------------------------------------------ #
     # 3. Import models so SQLAlchemy registers all table metadata.

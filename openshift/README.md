@@ -822,3 +822,111 @@ Both selectors in the same `from` entry → AND semantics (not OR).
 | 8H | Observability — Prometheus, Grafana, Kafka lag alerting, DLQ dashboards |
 | 8I | KEDA autoscaling — scale consumers by Kafka lag; relay by outbox depth |
 | 8J | Load testing — k6, resource limit tuning |
+
+---
+
+## Phase 8H — Observability
+
+### Prometheus Metrics
+
+Phase 8H adds Prometheus metrics to all five ArtistHub workloads.
+
+| Workload | Metrics endpoint | Scrape mechanism |
+|---|---|---|
+| backend | `GET /metrics` on port 5000 | `ServiceMonitor` (monitoring/servicemonitor-backend.yaml) |
+| outbox-relay | `GET /metrics` on port 9090 | `PodMonitor` (monitoring/podmonitor-workers.yaml) |
+| analytics-consumer | `GET /metrics` on port 9090 | `PodMonitor` (monitoring/podmonitor-workers.yaml) |
+| notification-consumer | `GET /metrics` on port 9090 | `PodMonitor` (monitoring/podmonitor-workers.yaml) |
+
+Workers have no Kubernetes Service — PodMonitor scrapes Pod IPs directly.  
+The `allow-ocp-monitoring` NetworkPolicy (policy #10) is updated to add port 9090.
+
+**Key metrics:**
+
+| Metric | Worker | Description |
+|---|---|---|
+| `flask_http_request_total` | backend | HTTP requests by method/path/status |
+| `flask_http_request_duration_seconds` | backend | Request latency histogram |
+| `artisthub_relay_outbox_backlog` | outbox-relay | Pending outbox row count |
+| `artisthub_relay_outbox_oldest_age_seconds` | outbox-relay | Age of oldest pending row |
+| `artisthub_relay_publish_total{topic}` | outbox-relay | Published events per topic |
+| `artisthub_relay_publish_failures_total{topic}` | outbox-relay | Failed events per topic |
+| `artisthub_analytics_messages_processed_total{event_type}` | analytics | Processed events |
+| `artisthub_analytics_messages_deadlettered_total{reason}` | analytics | Dead-lettered events |
+| `artisthub_notification_messages_processed_total` | notification | Processed events |
+| `artisthub_notification_notifications_created_total` | notification | Notification rows created |
+
+### Alerting Rules
+
+Defined in `openshift/base/monitoring/prometheusrule.yaml`:
+
+| Alert | Severity | Trigger |
+|---|---|---|
+| `BackendHighErrorRate` | warning | 5xx error rate > 1% for 5m |
+| `BackendNoHealthyReplicas` | critical | 0 ready backend pods |
+| `OutboxBacklogHigh` | warning | > 500 pending outbox events |
+| `OutboxOldestEventStale` | warning | oldest event > 10 minutes |
+| `OutboxPublishFailures` | warning | any publish failures in 15m |
+| `AnalyticsDeadLetterMessagesDetected` | warning | any dead-letter in 15m |
+| `NotificationDeadLetterMessagesDetected` | warning | any dead-letter in 15m |
+| `AnalyticsConsumerDown` | critical | 0 ready analytics pods |
+| `NotificationConsumerDown` | critical | 0 ready notification pods |
+| `OutboxRelayDown` | critical | 0 ready relay pods |
+| `WorkerCrashLoopBackOff` | warning | any pod in CrashLoopBackOff |
+
+### Grafana Dashboards
+
+Three dashboard ConfigMaps in `openshift/base/monitoring/grafana-dashboards.yaml`:
+
+| Dashboard UID | Focus |
+|---|---|
+| `artisthub-platform-health` | Backend HTTP metrics, pod counts |
+| `artisthub-kafka-pipeline` | Outbox backlog, publish rate, consumer throughput, dead-letter |
+| `artisthub-business-ops` | Follow rate, release/post/merch creation, DB retry rate |
+
+Import via: Grafana Operator (label `grafana.com/dashboard=artisthub`) or manual UI import.
+
+### Structured JSON Logging
+
+All workers emit structured JSON log lines (see `app/utils/structured_logging.py`):
+
+```json
+{
+  "timestamp": "2025-01-15T10:23:45Z",
+  "level": "INFO",
+  "logger": "app.services.outbox_relay",
+  "message": "Relay: published 3 event(s)",
+  "worker": "relay",
+  "correlation_id": ""
+}
+```
+
+Set `LOG_LEVEL=DEBUG` in `artisthub-config` ConfigMap for verbose output.
+
+### Correlation ID
+
+Every Flask API request receives a UUID correlation ID:
+- Generated at `before_request` (or propagated from `X-Correlation-ID` request header)
+- Stored in `flask.g.correlation_id`
+- Echoed in `X-Correlation-ID` response header
+
+### Manifests Added
+
+```
+openshift/base/monitoring/
+  servicemonitor-backend.yaml   — ServiceMonitor for Flask backend /metrics
+  podmonitor-workers.yaml       — PodMonitor for relay + consumers port 9090
+  prometheusrule.yaml           — Alerting rules
+  grafana-dashboards.yaml       — 3 Grafana dashboard ConfigMaps
+  kustomization.yaml            — Monitoring sub-kustomization
+```
+
+### Known Limitations (Phase 8H)
+
+| Limitation | Impact | Phase |
+|---|---|---|
+| Kafka consumer lag not measured | No direct lag metric in Prometheus | 8I (KEDA lag-based autoscaling) |
+| Alert thresholds are conservative | May not trigger at correct severity under real load | Calibrate in 8J |
+| Grafana Operator not provisioned | Dashboards require manual import or operator install | Deploy-time |
+| SBOM artifacts unsigned | SBOM provides inventory but lacks signature | 8I/8J |
+| Cosign verification BLOCKED | No live registry — signing workflow in place | Live registry required |

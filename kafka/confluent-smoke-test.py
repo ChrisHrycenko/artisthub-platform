@@ -402,11 +402,62 @@ def test_dead_letter():
         )
 
 
+# ─── Section E: Schema Registry metadata check ────────────────────────────────
+
+def test_schema_registry_metadata():
+    """
+    Phase 8H metadata-only check: verify Schema Registry is reachable and
+    returns subject metadata.  Does NOT register schemas or produce events.
+    """
+    section("E. Schema Registry Metadata Check (metadata-only)")
+
+    sr_url = os.environ.get("SCHEMA_REGISTRY_URL", "")
+    sr_key = os.environ.get("SCHEMA_REGISTRY_API_KEY", "")
+    sr_secret = os.environ.get("SCHEMA_REGISTRY_API_SECRET", "")
+
+    if not sr_url:
+        fail("SCHEMA_REGISTRY_URL is not set")
+        return
+
+    auth = (sr_key, sr_secret) if sr_key and sr_secret else None
+
+    import requests as _req
+    try:
+        resp = _req.get(
+            f"{sr_url}/subjects",
+            auth=auth,
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            subjects = resp.json()
+            ok(f"Schema Registry reachable: {len(subjects)} subject(s) found")
+            if subjects:
+                info(f"Sample subjects: {subjects[:5]}")
+        else:
+            fail(
+                f"Schema Registry returned HTTP {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+    except Exception as exc:
+        fail(f"Schema Registry connectivity error: {exc}")
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# SMOKE_METADATA_ONLY=1 restricts the smoke test to connectivity and metadata
+# checks only.  No events are produced to or consumed from Kafka topics.
+# Used by the confluent-smoke.yml GitHub Actions workflow.
+METADATA_ONLY: bool = os.environ.get("SMOKE_METADATA_ONLY", "0") == "1"
+
+
 def main():
-    print(f"\n{BOLD}ArtistHub Phase 8D — Kafka Smoke Test{RESET}")
-    print("=" * 60)
+    if METADATA_ONLY:
+        print(f"\n{BOLD}ArtistHub Phase 8H — Confluent Cloud Metadata Smoke Test{RESET}")
+        print("=" * 60)
+        print(f"  {YELLOW}Mode: METADATA-ONLY (no event production/consumption){RESET}")
+    else:
+        print(f"\n{BOLD}ArtistHub Phase 8D — Kafka Smoke Test{RESET}")
+        print("=" * 60)
 
     bootstrap, protocol = _check_creds()
     # Log endpoint without credentials
@@ -418,6 +469,23 @@ def main():
         print(f"\n{RED}Cannot proceed — broker unreachable.{RESET}")
         sys.exit(1)
 
+    # In metadata-only mode: stop after connectivity + topic + SR checks.
+    if METADATA_ONLY:
+        test_schema_registry_metadata()
+        print(f"\n{BOLD}{'=' * 60}{RESET}")
+        print(f"  {GREEN}PASSED: {PASSED}{RESET}")
+        if FAILED:
+            print(f"  {RED}FAILED: {FAILED}{RESET}")
+            sys.exit(1)
+        else:
+            print(f"  {GREEN}FAILED: 0{RESET}")
+            print(
+                f"\n  {GREEN}{BOLD}✓ Confluent Cloud metadata smoke test passed.{RESET}\n"
+            )
+            sys.exit(0)
+        return
+
+    # Full smoke test (original Phase 8D behaviour).
     smoke_event_id = test_producer()
 
     if smoke_event_id:

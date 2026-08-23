@@ -44,3 +44,6 @@ resources:
   - deployments/notification-consumer.yaml
   # Phase 8F — OpenShift Route (HTTPS edge termination, HTTP→HTTPS redirect)
   - routes/frontend-route.yaml
+  # Phase 8H — Prometheus monitoring manifests (ServiceMonitor, PodMonitor,
+  #             PrometheusRule, Grafana dashboards)
+  - monitoring/

@@ -70,7 +70,6 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   annotations:
     description: "Flask/gunicorn backend API for ArtistHub"
-    # Phase 8H: add Prometheus scrape annotations here.
 spec:
   replicas: 2
   # ------------------------------------------------------------------ #
@@ -92,6 +91,14 @@ spec:
         app.kubernetes.io/name: backend
         app.kubernetes.io/component: backend
         app.kubernetes.io/part-of: artisthub-platform
+      annotations:
+        # Phase 8H: Prometheus scrape annotations for ServiceMonitor fallback.
+        # The ServiceMonitor (openshift/base/monitoring/servicemonitor-backend.yaml)
+        # is the primary scrape config; these annotations are a belt-and-suspenders
+        # fallback for clusters without the monitoring CRD or for ad-hoc scraping.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
     spec:
       # ------------------------------------------------------------------ #
       # Identity                                                             #

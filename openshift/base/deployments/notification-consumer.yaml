@@ -78,6 +78,7 @@ metadata:
       Subscribed to artisthub.catalog.
       Max parallelism: 6 replicas (catalog partition count).
       Phase 8E: 2 replicas. Scale to 6 in Phase 8I via KEDA.
+      Phase 8H: exposes Prometheus metrics on port 9090.
 spec:
   replicas: 2
   # Same rolling strategy as analytics-consumer.  ProcessedEvent
@@ -120,6 +121,11 @@ spec:
           image: artisthub-backend:latest
           imagePullPolicy: IfNotPresent
           command: ["python", "run_notification_consumer.py"]
+          # Phase 8H: metrics port for PodMonitor scraping.
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
 
           # ---------------------------------------------------------------- #
           # Container-level security context                                  #

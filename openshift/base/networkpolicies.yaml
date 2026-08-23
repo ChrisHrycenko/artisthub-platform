@@ -333,6 +333,7 @@ spec:
 # ------------------------------------------------------------------ #
 # 10. Allow OCP monitoring → all pods on metrics ports.              #
 #     openshift-monitoring namespace scrapes /metrics where exposed.  #
+#     Phase 8H: added port 9090 for worker Prometheus metrics servers.#
 # ------------------------------------------------------------------ #
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -341,6 +342,14 @@ metadata:
   namespace: artisthub
   labels:
     app.kubernetes.io/part-of: artisthub-platform
+  annotations:
+    description: >
+      Allows Prometheus (openshift-monitoring namespace) to scrape:
+        port 5000  — Flask backend /metrics (prometheus_flask_exporter)
+        port 8080  — frontend (nginx status, if enabled)
+        port 9090  — worker processes /metrics (prometheus_client HTTP server)
+      Phase 8H: added port 9090 for outbox relay, analytics consumer,
+      and notification consumer Prometheus metrics endpoints.
 spec:
   podSelector: {}
   policyTypes:
@@ -354,6 +363,11 @@ spec:
         - port: 8080
           protocol: TCP
         - port: 5000
+          protocol: TCP
+        # Phase 8H: worker Prometheus metrics servers (outbox relay,
+        # analytics consumer, notification consumer).
+        # Default port 9090; overridable via WORKER_METRICS_PORT env var.
+        - port: 9090
           protocol: TCP
 
 ---
@@ -375,6 +389,8 @@ metadata:
       Allows kubelet liveness/readiness/startup probe traffic from
       node IPs.  Adjust ipBlock to the actual cluster node CIDR.
       Placeholder: 10.0.0.0/8 covers typical private RFC1918 node ranges.
+      Phase 8H: workers use heartbeat exec probes (no HTTP probe on 9090);
+      port 9090 is metrics-only, NOT a kubelet probe target.
 spec:
   podSelector: {}
   policyTypes:

@@ -1,0 +1,113 @@
+# openshift/base/monitoring/podmonitor-workers.yaml
+#
+# Phase 8H — PodMonitor for ArtistHub worker processes.
+#
+# Workers (outbox relay, analytics consumer, notification consumer) expose
+# Prometheus metrics on port 9090 (prometheus_client.start_http_server).
+# Workers have NO Kubernetes Service — they are push/pull-only workers.
+#
+# PodMonitor (not ServiceMonitor) is used because:
+#   1. Workers have no ClusterIP Service.
+#   2. Each worker Pod exposes metrics directly; scraping goes Pod→Prometheus.
+#   3. Creating a headless Service just for scraping is unnecessary and
+#      misleading (workers do not accept inbound connections).
+#
+# Three separate PodMonitors are defined so each has a clear selector and
+# the Prometheus target label (`job`) is specific to each workload.
+#
+# NetworkPolicy `allow-ocp-monitoring` (policy #10) is updated in Phase 8H
+# to allow ingress on port 9090 from the openshift-monitoring namespace.
+#
+# Port: 9090 (named "metrics" in each worker Deployment container spec)
+# Metrics path: /metrics (prometheus_client default)
+# Interval: 30s
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PodMonitor: outbox relay
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: outbox-relay-metrics
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: outbox-relay
+    app.kubernetes.io/component: outbox-relay
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Phase 8H: Scrapes /metrics from outbox relay Pods on port 9090.
+      Exposes relay_poll_cycles_total, relay_publish_total,
+      relay_publish_failures_total, relay_outbox_backlog,
+      relay_outbox_oldest_age_seconds.
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: outbox-relay
+  podMetricsEndpoints:
+    - port: metrics      # Named port "metrics" added to outbox-relay Deployment
+      path: /metrics
+      interval: 30s
+      honorLabels: false
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PodMonitor: analytics consumer
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: analytics-consumer-metrics
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: analytics-consumer
+    app.kubernetes.io/component: analytics-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Phase 8H: Scrapes /metrics from analytics consumer Pods on port 9090.
+      Exposes analytics_messages_processed_total, analytics_messages_skipped_total,
+      analytics_messages_deadlettered_total, analytics_db_retries_total.
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: analytics-consumer
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      honorLabels: false
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# PodMonitor: notification consumer
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: notification-consumer-metrics
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: notification-consumer
+    app.kubernetes.io/component: notification-consumer
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Phase 8H: Scrapes /metrics from notification consumer Pods on port 9090.
+      Exposes notification_messages_processed_total,
+      notification_messages_skipped_total,
+      notification_messages_deadlettered_total,
+      notification_notifications_created_total,
+      notification_db_retries_total.
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: notification-consumer
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      honorLabels: false

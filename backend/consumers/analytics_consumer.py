@@ -1,7 +1,7 @@
 """
 consumers/analytics_consumer.py
 
-Real-Time Analytics Consumer for ArtistHub — Phase 7D / 7F.
+Real-Time Analytics Consumer for ArtistHub — Phase 7D / 7F / 8H.
 
 Consumer group:   artisthub.analytics.v1
 Subscribed topics: artisthub.social, artisthub.catalog, artisthub.identity
@@ -83,6 +83,7 @@ SCHEMA_REGISTRY_API_SECRET Schema Registry basic-auth password (Cloud only)
 KAFKA_CONSUMER_GROUP     Consumer group (default: artisthub.analytics.v1)
 ANALYTICS_MAX_RETRIES    Max DB retries before dead-letter (default: 3)
 ANALYTICS_RETRY_BACKOFF  Base retry sleep in seconds (default: 1.0)
+WORKER_METRICS_PORT      Prometheus metrics HTTP port (default: 9090)
 """
 
 import json
@@ -93,6 +94,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Module-level metrics dict — populated by run() when prometheus_client
+# is available.  safe_inc / safe_set are no-ops when dict is empty.
+_metrics: dict = {}
 
 # ------------------------------------------------------------------ #
 # Constants                                                             #
@@ -463,6 +468,11 @@ def process_message(
     try:
         event = parse_message(raw)
     except ValueError as exc:
+        from app.utils.worker_metrics import safe_inc
+        safe_inc(
+            _metrics.get("messages_deadlettered_total"),
+            labels={"reason": "parse_error"},
+        )
         logger.error(
             "Malformed message | topic=%s partition=%d offset=%d err=%s",
             topic, partition, offset, exc,
@@ -480,6 +490,8 @@ def process_message(
 
     # ---- Step 4 (pre-check): skip unsupported event types -----------
     if event_type not in _HANDLED_EVENT_TYPES:
+        from app.utils.worker_metrics import safe_inc
+        safe_inc(_metrics.get("messages_skipped_total"))
         logger.info(
             "Unsupported event_type skipped | event_type=%s "
             "topic=%s partition=%d offset=%d",
@@ -488,6 +500,8 @@ def process_message(
         return True  # commit offset; not an error
 
     # ---- Steps 4–7: apply with retry on DB failure ------------------
+    from app.utils.worker_metrics import safe_inc
+
     last_exc: Optional[Exception] = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -504,15 +518,23 @@ def process_message(
                 db.session.commit()   # Step 7: DB transaction commits here
 
             if applied:
+                safe_inc(
+                    _metrics.get("messages_processed_total"),
+                    labels={"event_type": event_type},
+                )
                 logger.info(
                     "Event processed | event_id=%s event_type=%s "
                     "topic=%s partition=%d offset=%d",
                     event_id, event_type, topic, partition, offset,
                 )
+            else:
+                # Duplicate — applied returned False.
+                safe_inc(_metrics.get("messages_skipped_total"))
             return True  # Step 8: caller will commit Kafka offset
 
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            safe_inc(_metrics.get("db_retries_total"))
             try:
                 with flask_app.app_context():
                     db.session.rollback()
@@ -530,6 +552,10 @@ def process_message(
     logger.error(
         "Retries exhausted for event | event_id=%s event_type=%s err=%s",
         event_id, event_type, last_exc,
+    )
+    safe_inc(
+        _metrics.get("messages_deadlettered_total"),
+        labels={"reason": "db_retries_exhausted"},
     )
     publish_dead_letter(
         dl_producer, topic, partition, offset,
@@ -566,6 +592,8 @@ def run(
         _consumer:     Inject a consumer instance (for testing).
         _dl_producer:  Inject a dead-letter producer (for testing).
     """
+    global _metrics
+
     if not _CONFLUENT_AVAILABLE and _consumer is None:
         raise RuntimeError(
             "confluent-kafka is not installed. "
@@ -573,11 +601,11 @@ def run(
         )  # pragma: no cover
 
     from app.utils.heartbeat import touch_heartbeat
+    from app.utils.worker_metrics import start_metrics_server
+    from app.utils.structured_logging import configure_structured_logging
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_structured_logging(worker="analytics")
+    _registry, _metrics = start_metrics_server("analytics")
 
     from app import create_app
     flask_app = create_app()

@@ -14,3 +14,10 @@ requests==2.34.2
 # psycopg2-binary bundles libpq so no system package is needed.
 # Use psycopg2 (not binary) in production images built from source.
 psycopg2-binary==2.9.12
+# Prometheus metrics — Phase 8H
+# prometheus-flask-exporter auto-instruments all Flask routes and exposes /metrics.
+# prometheus-client provides the core registry, counters, gauges, histograms.
+# Used by workers (outbox relay, analytics consumer, notification consumer) for
+# a lightweight HTTP metrics server on port 9090.
+prometheus-flask-exporter==0.23.1
+prometheus-client==0.21.1

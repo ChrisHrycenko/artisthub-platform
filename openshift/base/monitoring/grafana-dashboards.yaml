@@ -1,0 +1,339 @@
+# openshift/base/monitoring/grafana-dashboards.yaml
+#
+# Phase 8H — Grafana Dashboard ConfigMaps.
+#
+# Grafana dashboard definitions are shipped as ConfigMaps and loaded by the
+# Grafana Operator (or sidecar) via the grafana.com/dashboard=artisthub label.
+#
+# Three dashboards are defined:
+#
+#   artisthub-platform-health  — overall platform health (backend, workers)
+#   artisthub-kafka-pipeline   — Kafka/event pipeline (outbox, consumers, lag)
+#   artisthub-business-ops     — business-operational (follows, releases, posts)
+#
+# USAGE WITH OPENSHIFT GRAFANA OPERATOR:
+#   If the Grafana Operator is installed:
+#     kubectl apply -k openshift/base/monitoring/
+#   The operator's dashboard controller watches ConfigMaps labelled
+#   grafana.com/dashboard=artisthub and imports them automatically.
+#
+# USAGE WITHOUT GRAFANA OPERATOR:
+#   Import the JSON values manually via the Grafana UI:
+#     Dashboards → Import → Paste JSON.
+#
+# NOTE: Panel expressions reference metric names as emitted by:
+#   - prometheus_flask_exporter (backend)
+#   - app/utils/worker_metrics.py (workers)
+#   These must match exactly.  If metric names change, update these panels.
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard 1: Platform Health
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-platform-health
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+    grafana.com/dashboard: artisthub
+  annotations:
+    description: >
+      Phase 8H: ArtistHub platform health dashboard.
+      Panels: backend request rate, error rate, latency p95, pod counts.
+data:
+  platform-health.json: |
+    {
+      "title": "ArtistHub — Platform Health",
+      "uid": "artisthub-platform-health",
+      "tags": ["artisthub", "platform"],
+      "timezone": "browser",
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Backend HTTP Request Rate (req/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(rate(flask_http_request_total{app=\"artisthub-backend\"}[5m])) by (http_status)",
+              "legendFormat": "HTTP {{http_status}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Backend HTTP Error Rate (5xx %)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(rate(flask_http_request_exceptions_total{app=\"artisthub-backend\"}[5m])) / sum(rate(flask_http_request_total{app=\"artisthub-backend\"}[5m])) * 100",
+              "legendFormat": "5xx Error Rate %"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Backend Request Latency p95 (ms)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(flask_http_request_duration_seconds_bucket{app=\"artisthub-backend\"}[5m])) by (le)) * 1000",
+              "legendFormat": "p95 latency (ms)"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Backend Ready Replicas",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 8},
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_ready{namespace=\"artisthub\",deployment=\"backend\"}",
+              "legendFormat": "Ready"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Outbox Relay Ready Replicas",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 8},
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_ready{namespace=\"artisthub\",deployment=\"outbox-relay\"}",
+              "legendFormat": "Ready"
+            }
+          ]
+        }
+      ]
+    }
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard 2: Kafka / Event Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-kafka-pipeline
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+    grafana.com/dashboard: artisthub
+  annotations:
+    description: >
+      Phase 8H: Kafka event pipeline dashboard.
+      Panels: outbox backlog, outbox oldest age, publish rate/failures,
+      analytics/notification processed rate, dead-letter rate.
+data:
+  kafka-pipeline.json: |
+    {
+      "title": "ArtistHub — Kafka Event Pipeline",
+      "uid": "artisthub-kafka-pipeline",
+      "tags": ["artisthub", "kafka", "events"],
+      "timezone": "browser",
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Outbox Backlog (pending events)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "artisthub_relay_outbox_backlog",
+              "legendFormat": "Pending outbox rows"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Oldest Pending Outbox Event Age (seconds)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "artisthub_relay_outbox_oldest_age_seconds",
+              "legendFormat": "Oldest pending age (s)"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Relay Publish Rate (events/s by topic)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_relay_publish_total[5m])) by (topic)",
+              "legendFormat": "{{topic}}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Relay Publish Failures (events/s by topic)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_relay_publish_failures_total[5m])) by (topic)",
+              "legendFormat": "{{topic}} failures"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Analytics Events Processed (events/s by event_type)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_analytics_messages_processed_total[5m])) by (event_type)",
+              "legendFormat": "{{event_type}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Dead-Letter Events (rate/s by consumer)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_analytics_messages_deadlettered_total[5m])) by (reason)",
+              "legendFormat": "analytics/{{reason}}"
+            },
+            {
+              "expr": "sum(rate(artisthub_notification_messages_deadlettered_total[5m])) by (reason)",
+              "legendFormat": "notification/{{reason}}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Notification Events Processed (events/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_notification_messages_processed_total[5m]))",
+              "legendFormat": "notification processed"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Notification Rows Created (events/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+          "targets": [
+            {
+              "expr": "sum(rate(artisthub_notification_notifications_created_total[5m]))",
+              "legendFormat": "notifications queued"
+            }
+          ]
+        }
+      ]
+    }
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Dashboard 3: Business / Operational
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-business-ops
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+    grafana.com/dashboard: artisthub
+  annotations:
+    description: >
+      Phase 8H: ArtistHub business-operational dashboard.
+      Panels: follow events rate, release creation rate, post rate,
+      merch rate, relay poll cycle rate, DB retry rate.
+data:
+  business-ops.json: |
+    {
+      "title": "ArtistHub — Business Operations",
+      "uid": "artisthub-business-ops",
+      "tags": ["artisthub", "business"],
+      "timezone": "browser",
+      "refresh": "60s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Fan Follow/Unfollow Rate (events/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "rate(artisthub_analytics_messages_processed_total{event_type=\"fan.followed.artist\"}[5m])",
+              "legendFormat": "follows"
+            },
+            {
+              "expr": "rate(artisthub_analytics_messages_processed_total{event_type=\"fan.unfollowed.artist\"}[5m])",
+              "legendFormat": "unfollows"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Release / Post / Merch Creation Rate (events/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "rate(artisthub_analytics_messages_processed_total{event_type=\"artist.release.created\"}[5m])",
+              "legendFormat": "release.created"
+            },
+            {
+              "expr": "rate(artisthub_analytics_messages_processed_total{event_type=\"artist.post.created\"}[5m])",
+              "legendFormat": "post.created"
+            },
+            {
+              "expr": "rate(artisthub_analytics_messages_processed_total{event_type=\"artist.merch.created\"}[5m])",
+              "legendFormat": "merch.created"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Relay Poll Cycles (cycles/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "rate(artisthub_relay_poll_cycles_total[5m])",
+              "legendFormat": "relay poll cycles/s"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "DB Retry Rate (retries/s)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "targets": [
+            {
+              "expr": "rate(artisthub_analytics_db_retries_total[5m])",
+              "legendFormat": "analytics retries/s"
+            },
+            {
+              "expr": "rate(artisthub_notification_db_retries_total[5m])",
+              "legendFormat": "notification retries/s"
+            }
+          ]
+        }
+      ]
+    }

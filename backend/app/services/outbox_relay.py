@@ -140,7 +140,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app import create_app
 from app.extensions import db
@@ -155,6 +155,10 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL: float = float(os.environ.get("OUTBOX_POLL_INTERVAL", "5"))
 BATCH_SIZE: int = int(os.environ.get("OUTBOX_BATCH_SIZE", "100"))
+
+# Module-level metrics dict — populated by run() when prometheus_client is
+# available.  safe_inc / safe_set are no-ops when metrics is None or empty.
+_metrics: dict = {}
 
 
 # ------------------------------------------------------------------ #
@@ -180,6 +184,7 @@ def _is_sqlite(flask_app) -> bool:
 def _make_delivery_callback(
     outbox_id: int,
     flask_app,
+    topic: str,
 ):
     """
     Return a delivery callback closure bound to the outbox row id.
@@ -192,7 +197,12 @@ def _make_delivery_callback(
     has already committed before produce() is called).  The callback opens
     its own transaction (Transaction 2) to mark the row published or to
     record an error.
+
+    Phase 8H: increments publish_total / publish_failures_total Prometheus
+    counters using the topic label.
     """
+    from app.utils.worker_metrics import safe_inc
+
     def callback(err, msg):
         """Mark the outbox row as published, or record the error."""
         with flask_app.app_context():
@@ -205,6 +215,10 @@ def _make_delivery_callback(
             row.publish_attempts += 1
             if err:
                 row.last_error = str(err)
+                safe_inc(
+                    _metrics.get("publish_failures_total"),
+                    labels={"topic": topic},
+                )
                 logger.error(
                     "Kafka delivery failed | outbox_id=%d event_type=%s "
                     "topic=%s err=%s",
@@ -213,6 +227,10 @@ def _make_delivery_callback(
             else:
                 row.published_at = datetime.now(timezone.utc)
                 row.last_error = None
+                safe_inc(
+                    _metrics.get("publish_total"),
+                    labels={"topic": topic},
+                )
                 logger.debug(
                     "Kafka delivery confirmed | outbox_id=%d event_type=%s "
                     "topic=%s partition=%d offset=%d",
@@ -311,7 +329,7 @@ def poll_and_publish(
         logger.debug("Relay: %d pending event(s) to publish", len(pending))
 
         for row in pending:
-            callback = _make_delivery_callback(row.id, flask_app)
+            callback = _make_delivery_callback(row.id, flask_app, row.topic)
             try:
                 # Decode the outbox JSON payload to a dict, then let the
                 # producer serialize it to Confluent Avro wire format.
@@ -327,9 +345,14 @@ def poll_and_publish(
                 # produce_avro() raised before enqueueing — update row.
                 # This is Transaction 2 for the error case when the
                 # delivery callback is never invoked.
+                from app.utils.worker_metrics import safe_inc
                 row.publish_attempts += 1
                 row.last_error = str(exc)
                 db.session.commit()
+                safe_inc(
+                    _metrics.get("publish_failures_total"),
+                    labels={"topic": row.topic},
+                )
                 logger.error(
                     "Relay produce_avro error | "
                     "outbox_id=%d event_type=%s err=%s",
@@ -339,6 +362,49 @@ def poll_and_publish(
         # Block until all enqueued messages are acknowledged or 30 s elapses.
         producer.flush(timeout=30.0)
         return len(pending)
+
+
+def _update_backlog_gauge(flask_app) -> None:
+    """
+    Query the DB for pending outbox row count and oldest row age, then update
+    the Prometheus gauges.  Called once per poll cycle.
+
+    Uses a lightweight aggregate query — does not lock any rows.
+    Silently skips if metrics are not initialised or DB is unavailable.
+    """
+    from app.utils.worker_metrics import safe_set
+
+    backlog_gauge = _metrics.get("outbox_backlog")
+    oldest_gauge = _metrics.get("outbox_oldest_age_seconds")
+    if backlog_gauge is None and oldest_gauge is None:
+        return
+
+    try:
+        with flask_app.app_context():
+            # Count pending rows.
+            count = db.session.execute(
+                select(func.count()).select_from(OutboxEvent).where(
+                    OutboxEvent.published_at.is_(None)
+                )
+            ).scalar() or 0
+            safe_set(backlog_gauge, float(count))
+
+            # Age of the oldest pending row.
+            if count > 0:
+                oldest_created_at = db.session.execute(
+                    select(func.min(OutboxEvent.created_at)).where(
+                        OutboxEvent.published_at.is_(None)
+                    )
+                ).scalar()
+                if oldest_created_at is not None:
+                    age = (
+                        datetime.now(timezone.utc) - oldest_created_at
+                    ).total_seconds()
+                    safe_set(oldest_gauge, max(0.0, age))
+            else:
+                safe_set(oldest_gauge, 0.0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Backlog gauge update failed: %s", exc)
 
 
 def run(
@@ -363,17 +429,25 @@ def run(
     The SQLite fallback (development/test) performs a plain SELECT and
     does not support concurrent replicas.
 
+    Phase 8H: starts a Prometheus HTTP server on port 9090
+    (WORKER_METRICS_PORT), registers relay-specific counters/gauges,
+    and emits structured JSON logs.
+
     Args:
         poll_interval: Seconds to sleep between poll cycles.
         batch_size:    Max outbox rows to process per cycle.
         _producer:     Inject a producer instance (for testing).
     """
-    from app.utils.heartbeat import touch_heartbeat
+    global _metrics
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    from app.utils.heartbeat import touch_heartbeat
+    from app.utils.worker_metrics import start_metrics_server, safe_inc
+    from app.utils.structured_logging import configure_structured_logging
+
+    configure_structured_logging(worker="relay")
+
+    _registry, _metrics = start_metrics_server("relay")
+
     flask_app = create_app()
     producer = _producer or KafkaProducerService()
 
@@ -384,9 +458,12 @@ def run(
 
     try:
         while True:
+            safe_inc(_metrics.get("poll_cycles_total"))
             count = poll_and_publish(flask_app, producer, batch_size)
             if count:
                 logger.info("Relay: published %d event(s)", count)
+            # Update backlog gauge once per cycle.
+            _update_backlog_gauge(flask_app)
             # Update heartbeat after each poll cycle — proves the loop is
             # alive, not just that the Python process exists.
             touch_heartbeat("relay_alive")
