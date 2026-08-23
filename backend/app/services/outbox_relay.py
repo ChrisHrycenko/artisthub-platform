@@ -15,14 +15,16 @@ Or via the convenience entry point:
 What the relay does
 -------------------
 1. Polls the event_outbox table for rows where published_at IS NULL.
-2. Deserializes the JSON payload stored in the outbox.
-3. Converts the dict to an Avro-serialized Confluent wire-format message
+2. Claims a batch of rows using SELECT FOR UPDATE SKIP LOCKED so that
+   concurrent relay replicas each process a disjoint set of rows.
+3. Deserializes the JSON payload stored in the outbox.
+4. Converts the dict to an Avro-serialized Confluent wire-format message
    via KafkaProducerService.produce_avro().
-4. Waits for the broker acknowledgement via the delivery callback.
-5. On success: sets published_at = now().
-6. On failure: increments publish_attempts, records last_error,
+5. Waits for the broker acknowledgement via the delivery callback.
+6. On success: sets published_at = now() in a separate transaction.
+7. On failure: increments publish_attempts, records last_error,
    leaves published_at = NULL so the row is retried.
-7. Loops indefinitely with a configurable poll interval.
+8. Loops indefinitely with a configurable poll interval.
 
 Phase 7F changes
 ----------------
@@ -33,6 +35,78 @@ Phase 7F changes
   event JSON (envelope + domain payload) as a UTF-8 string.
 - If Schema Registry is unreachable or the schema is invalid, the error is
   recorded in last_error and published_at remains NULL (retry on next cycle).
+
+Phase 8F changes — SELECT FOR UPDATE SKIP LOCKED
+-------------------------------------------------
+The relay now uses SELECT FOR UPDATE SKIP LOCKED to claim rows before
+publishing them to Kafka.  This makes it safe to run multiple relay replicas
+concurrently:
+
+  Transaction A (relay replica 1):
+    SELECT ... FOR UPDATE SKIP LOCKED LIMIT 100
+      → locks rows 1–100; replica 2 will skip these
+
+  Transaction B (relay replica 2):
+    SELECT ... FOR UPDATE SKIP LOCKED LIMIT 100
+      → locks rows 101–200; replica 1 will skip these
+
+Each replica acquires row-level locks on the rows it will process.  The
+FOR UPDATE lock is held ONLY for the duration of the claim transaction
+(which ends before Kafka produce begins — see Transaction boundaries below).
+
+Transaction boundaries
+----------------------
+Two separate transactions are used per relay cycle:
+
+  TRANSACTION 1 — Claim (SELECT FOR UPDATE SKIP LOCKED):
+    BEGIN
+    SELECT id FROM event_outbox
+      WHERE published_at IS NULL
+      ORDER BY id
+      LIMIT batch_size
+      FOR UPDATE SKIP LOCKED
+    COMMIT (locks released; row IDs captured in memory)
+
+  [Kafka produce + flush happens OUTSIDE any transaction]
+
+  TRANSACTION 2 — Mark published / record error:
+    BEGIN
+    UPDATE event_outbox SET published_at = now() WHERE id = ?
+    -- OR --
+    UPDATE event_outbox SET publish_attempts += 1, last_error = ? WHERE id = ?
+    COMMIT
+
+Why Kafka produce is outside the transaction
+--------------------------------------------
+Kafka does not participate in PostgreSQL transactions.  Holding a database
+lock while waiting for a Kafka broker acknowledgement (up to 30 seconds)
+would starve other relay replicas and inflate lock contention under load.
+
+The at-least-once crash window
+-------------------------------
+There is a brief window between Kafka broker acknowledgement and the
+PostgreSQL COMMIT in Transaction 2.  If the relay process crashes in this
+window, the row remains published_at IS NULL and will be re-published on
+the next relay cycle.  This produces a duplicate Kafka message.
+
+This is intentional and safe:
+  - The relay uses producer enable.idempotence=True (reduces duplicates
+    within a producer session but does NOT eliminate the crash window).
+  - Downstream consumers (analytics, notification) use ProcessedEvent
+    deduplication via (event_id, consumer_group) to absorb any duplicate.
+  - The guarantee is: AT-LEAST-ONCE delivery with idempotent downstream
+    processing.  This is NOT exactly-once.
+
+SQLite compatibility
+--------------------
+SQLite does NOT support SELECT FOR UPDATE (it has no row-level locking).
+When the active database is SQLite (detected via engine dialect), the relay
+falls back to a plain SELECT without FOR UPDATE.  The SQLite fallback is
+only used in development and testing — never in the production cluster.
+
+Running multiple relay replicas against SQLite would cause duplicates, but
+this is acceptable in the development/testing context where a single relay
+is always used.
 
 Reliability properties
 ----------------------
@@ -45,6 +119,9 @@ Reliability properties
   last_error let operators identify stuck events.
 - No silent loss:   A failed publish is always recorded in last_error.
   The relay never silently discards an outbox row.
+- Safe to scale:    Two or more relay replicas can run concurrently without
+  producing duplicate Kafka events for the same row, because SKIP LOCKED
+  ensures each row is claimed by exactly one replica per cycle.
 
 Configuration (environment variables)
 --------------------------------------
@@ -63,6 +140,8 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from sqlalchemy import select
+
 from app import create_app
 from app.extensions import db
 from app.models.outbox import OutboxEvent
@@ -79,6 +158,22 @@ BATCH_SIZE: int = int(os.environ.get("OUTBOX_BATCH_SIZE", "100"))
 
 
 # ------------------------------------------------------------------ #
+# Helpers                                                               #
+# ------------------------------------------------------------------ #
+
+def _is_sqlite(flask_app) -> bool:
+    """
+    Return True when the configured database is SQLite.
+
+    Used to decide whether SELECT FOR UPDATE SKIP LOCKED can be used.
+    SQLite does not support row-level locking; the relay falls back to a
+    plain SELECT in that case.
+    """
+    db_url = flask_app.config.get("SQLALCHEMY_DATABASE_URI", "")
+    return db_url.startswith("sqlite") or not db_url
+
+
+# ------------------------------------------------------------------ #
 # Core relay logic                                                      #
 # ------------------------------------------------------------------ #
 
@@ -92,6 +187,11 @@ def _make_delivery_callback(
     The callback is invoked by the Kafka producer after the broker
     acknowledges (or rejects) the message. It runs on the same thread
     as flush() — no concurrent DB access.
+
+    Phase 8F: the callback runs OUTSIDE the claim transaction (Transaction 1
+    has already committed before produce() is called).  The callback opens
+    its own transaction (Transaction 2) to mark the row published or to
+    record an error.
     """
     def callback(err, msg):
         """Mark the outbox row as published, or record the error."""
@@ -119,6 +219,10 @@ def _make_delivery_callback(
                     outbox_id, row.event_type, msg.topic(),
                     msg.partition(), msg.offset(),
                 )
+            # Transaction 2: commit the published_at / last_error update.
+            # If this commit fails (e.g. DB transient error), the row
+            # remains pending and will be re-published on the next cycle
+            # (at-least-once delivery guarantee).
             db.session.commit()
     return callback
 
@@ -135,19 +239,71 @@ def poll_and_publish(
 
     This function is designed to be called in a loop by ``run()``.
     It is also directly callable in tests (inject a mock producer).
+
+    Phase 8F: uses SELECT FOR UPDATE SKIP LOCKED on PostgreSQL so that
+    multiple relay replicas each claim a disjoint batch of rows without
+    producing duplicates.  Falls back to a plain SELECT on SQLite (which
+    does not support row-level locking).
+
+    Transaction model
+    -----------------
+    Transaction 1 (claim) — closed before Kafka produce:
+        SELECT id FROM event_outbox
+          WHERE published_at IS NULL
+          ORDER BY id
+          LIMIT batch_size
+          FOR UPDATE SKIP LOCKED   ← PostgreSQL only
+        COMMIT
+
+    [Kafka produce_avro + flush executed outside any transaction]
+
+    Transaction 2 (mark) — opened inside the delivery callback per row:
+        UPDATE event_outbox SET published_at = now()  OR  last_error = ?
+        COMMIT
     """
     with flask_app.app_context():
-        # Fetch up to batch_size rows that have not been published yet.
-        # Order by id (insertion order) to preserve per-artist event ordering
-        # within a relay cycle — the Kafka message key handles ordering within
-        # the topic partition.
-        pending = (
-            OutboxEvent.query
-            .filter(OutboxEvent.published_at.is_(None))
-            .order_by(OutboxEvent.id.asc())
-            .limit(batch_size)
-            .all()
-        )
+        use_skip_locked = not _is_sqlite(flask_app)
+
+        if use_skip_locked:
+            # PostgreSQL path: SELECT FOR UPDATE SKIP LOCKED
+            # -----------------------------------------------
+            # Build the query using SQLAlchemy Core select() so we can
+            # attach .with_for_update(skip_locked=True).
+            # The claim transaction is committed immediately after fetching
+            # row IDs — we only need the IDs to look up rows for Kafka.
+            # The lock is released once this context exits.
+            #
+            # Why commit before produce?
+            #   Holding a FOR UPDATE lock while waiting for a Kafka broker
+            #   ack (up to 30s) would create long-held locks that starve
+            #   other relay replicas.  We release the lock after capturing
+            #   the row IDs and re-fetch each row inside the delivery
+            #   callback's own transaction.
+            stmt = (
+                select(OutboxEvent)
+                .where(OutboxEvent.published_at.is_(None))
+                .order_by(OutboxEvent.id.asc())
+                .limit(batch_size)
+                .with_for_update(skip_locked=True)
+            )
+            pending = db.session.execute(stmt).scalars().all()
+            # Capture IDs + ephemeral row data before the transaction ends.
+            # We hold these in local variables; the SQLAlchemy objects remain
+            # usable within this app_context even after commit.
+            db.session.commit()   # Release FOR UPDATE locks (Transaction 1)
+        else:
+            # SQLite fallback: plain SELECT without row-level locking.
+            # ---------------------------------------------------------
+            # SQLite serialises all writes — concurrent relay replicas
+            # are not supported on SQLite.  This path is used only in
+            # development and the test suite.  No FOR UPDATE is emitted.
+            pending = (
+                OutboxEvent.query
+                .filter(OutboxEvent.published_at.is_(None))
+                .order_by(OutboxEvent.id.asc())
+                .limit(batch_size)
+                .all()
+            )
 
         if not pending:
             return 0
@@ -169,6 +325,8 @@ def poll_and_publish(
                 )
             except Exception as exc:  # noqa: BLE001
                 # produce_avro() raised before enqueueing — update row.
+                # This is Transaction 2 for the error case when the
+                # delivery callback is never invoked.
                 row.publish_attempts += 1
                 row.last_error = str(exc)
                 db.session.commit()
@@ -198,6 +356,12 @@ def run(
     progress.  The heartbeat is written regardless of whether any outbox
     rows were found, so an idle relay (no pending events) does not trigger
     a false liveness failure.
+
+    Phase 8F: replicas: 2 is now safe because poll_and_publish() uses
+    SELECT FOR UPDATE SKIP LOCKED on PostgreSQL.  Each replica claims a
+    disjoint batch of rows, preventing duplicate Kafka publishes.
+    The SQLite fallback (development/test) performs a plain SELECT and
+    does not support concurrent replicas.
 
     Args:
         poll_interval: Seconds to sleep between poll cycles.

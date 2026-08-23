@@ -81,7 +81,17 @@ spec:
 ---
 # ------------------------------------------------------------------ #
 # 3. Allow OCP ingress router → frontend on port 8080.               #
-#    The router runs in openshift-ingress namespace.                  #
+#                                                                     #
+# Phase 8F: tightened to require both conditions simultaneously:      #
+#   (a) source pod is in the openshift-ingress namespace, AND         #
+#   (b) source pod carries the router ingresscontroller label.        #
+#                                                                     #
+# Both selectors are placed in a single `from` list entry so they    #
+# combine as AND (not OR).  This rejects any non-router pod that     #
+# might be scheduled in the openshift-ingress namespace.             #
+#                                                                     #
+# OCP router pod label (set by the IngressController operator):       #
+#   ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
 # ------------------------------------------------------------------ #
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -91,6 +101,12 @@ metadata:
   labels:
     app.kubernetes.io/component: frontend
     app.kubernetes.io/part-of: artisthub-platform
+  annotations:
+    description: >
+      Phase 8F: allows ingress from OCP router pods only (namespace AND
+      pod selector combined as AND).  Router pods carry the label
+      ingresscontroller.operator.openshift.io/deployment-ingresscontroller=default
+      and run in the openshift-ingress namespace.
 spec:
   podSelector:
     matchLabels:
@@ -99,9 +115,15 @@ spec:
     - Ingress
   ingress:
     - from:
+        # Both selectors in the SAME list entry → AND semantics.
+        # namespaceSelector alone would allow any pod in openshift-ingress.
+        # Adding podSelector restricts to router pods specifically.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: openshift-ingress
+          podSelector:
+            matchLabels:
+              ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
       ports:
         - port: 8080
           protocol: TCP

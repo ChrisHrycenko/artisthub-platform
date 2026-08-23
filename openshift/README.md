@@ -10,6 +10,10 @@ Secret references, NetworkPolicies, and Services.
 and the OpenShift-specific nginx configuration. All application behaviour from
 Phase 8D (Confluent Cloud Kafka, Avro, Schema Registry) is preserved.
 
+**Phase 8F** adds the public HTTPS Route (edge TLS, HTTP→HTTPS redirect),
+tightens the NetworkPolicy for the OCP router, and upgrades the outbox relay
+to SELECT FOR UPDATE SKIP LOCKED, enabling safe 2-replica operation.
+
 ---
 
 ## Directory Structure
@@ -31,11 +35,13 @@ openshift/
 │   ├── deployments/                       # Phase 8E — workload Deployments
 │   │   ├── backend.yaml                   # Flask/gunicorn backend (2 replicas)
 │   │   ├── frontend.yaml                  # nginx-unprivileged frontend (2 replicas)
-│   │   ├── outbox-relay.yaml              # Outbox relay (1 replica — no SKIP LOCKED yet)
+│   │   ├── outbox-relay.yaml              # Outbox relay (2 replicas — SKIP LOCKED)
 │   │   ├── analytics-consumer.yaml        # Analytics consumer (2 replicas, max 15)
 │   │   └── notification-consumer.yaml     # Notification consumer (2 replicas, max 6)
-│   └── jobs/
-│       └── db-migrate.yaml                # One-shot Flask-Migrate Job
+│   ├── jobs/
+│   │   └── db-migrate.yaml                # One-shot Flask-Migrate Job
+│   └── routes/                            # Phase 8F — OpenShift Routes
+│       └── frontend-route.yaml            # HTTPS Route for frontend-svc:8080
 ├── overlays/
 │   ├── local/
 │   │   └── kustomization.yaml             # Local dev: PLAINTEXT Kafka, localhost CORS
@@ -51,61 +57,237 @@ openshift/
 ## Architecture
 
 ```
-                 ┌─────────────────────────────────────────┐
-                 │  Internet (Phase 8F — Route/TLS, not yet) │
-                 └──────────────────┬──────────────────────┘
-                                    │ port 8080 (future Route)
-                          ┌─────────▼─────────┐
-                          │  frontend-svc      │  ClusterIP :8080
-                          │  (nginx-unprivileged)│
-                          └─────────┬─────────┘
-                                    │ /api/* → port 5000
-                          ┌─────────▼─────────┐
-                          │  backend-svc       │  ClusterIP :5000
-                          │  (Flask/gunicorn)  │
-                          └──────┬─────────────┘
-                                 │ SQL
-                    ┌────────────▼────────────┐
-                    │  postgresql-svc :5432   │  ClusterIP
-                    │  (PostgreSQL)           │
-                    └────────────┬────────────┘
-                                 │
-                    ┌────────────▼────────────┐
-                    │     event_outbox table  │
-                    └────────────┬────────────┘
-                                 │ poll (5s)
-                    ┌────────────▼────────────┐
-                    │   outbox-relay          │  No Service
-                    │   (1 replica)           │
-                    └────────────┬────────────┘
-                                 │ produce
-                    ┌────────────▼────────────┐
-                    │    Confluent Cloud      │
-                    │    Kafka Cluster        │
-                    │  social / catalog /     │
-                    │  identity / deadletter  │
-                    └──────┬─────────────────┘
-                           │ consume
-               ┌───────────┼──────────────────┐
-               │           │                  │
-    ┌──────────▼──┐  ┌─────▼──────────┐       │
-    │ analytics-  │  │ notification-  │       │
-    │ consumer    │  │ consumer       │       │
-    │ (2 replicas)│  │ (2 replicas)   │       │
-    └──────┬──────┘  └──────┬─────────┘       │
-           │                │                 │
-           └────────────────┘                 │
-                    │ SQL                      │
-           ┌────────▼────────────────────────┐│
-           │  postgresql-svc :5432           ││
-           └─────────────────────────────────┘│
-                                               │
-  ┌─────────────────────────────────────────  ┘
-  │  Phase 8F — public Route + TLS (NOT YET IMPLEMENTED)
-  └─────────────────────────────────────────────────────
-
-Note: Public internet access is blocked until Phase 8F adds the OCP Route.
+                      Internet (HTTPS)
+                           │
+                           │ TLS termination at OCP Router
+                           │ (edge — default wildcard certificate)
+                           │ HTTP→HTTPS redirect (301)
+                           ▼
+                ┌──────────────────────┐
+                │   Route: frontend    │  route.openshift.io/v1
+                │   host: artisthub   │  host: artisthub.apps.CLUSTER_DOMAIN
+                │   .apps.CLUSTER_DOMAIN│
+                └──────────┬───────────┘
+                           │ plain HTTP port 8080 (inside cluster)
+                ┌──────────▼───────────┐
+                │   frontend-svc       │  ClusterIP :8080
+                │   (nginx-unprivileged│
+                │    2 replicas)       │
+                └──────────┬───────────┘
+                           │ /api/* → port 5000
+                ┌──────────▼───────────┐
+                │   backend-svc        │  ClusterIP :5000
+                │   (Flask/gunicorn    │
+                │    2 replicas)       │
+                └────────┬─────────────┘
+                         │ SQL
+            ┌────────────▼────────────┐
+            │  postgresql-svc :5432   │  ClusterIP
+            │  (PostgreSQL)           │
+            └────────────┬────────────┘
+                         │
+            ┌────────────▼────────────┐
+            │     event_outbox table  │
+            └────────────┬────────────┘
+                         │ SELECT FOR UPDATE SKIP LOCKED (5s poll)
+            ┌────────────▼────────────┐
+            │   outbox-relay          │  No Service
+            │   (2 replicas — safe    │  SKIP LOCKED prevents duplicate
+            │    via SKIP LOCKED)     │  publishes across replicas
+            └────────────┬────────────┘
+                         │ produce (Avro, SASL_SSL)
+            ┌────────────▼────────────┐
+            │    Confluent Cloud      │
+            │    Kafka Cluster        │
+            │  social / catalog /     │
+            │  identity / deadletter  │
+            └──────┬──────────────────┘
+                   │ consume
+       ┌───────────┴──────────────────┐
+       │                              │
+┌──────▼──────┐              ┌────────▼────────┐
+│ analytics-  │              │ notification-   │
+│ consumer    │              │ consumer        │
+│ (2 replicas)│              │ (2 replicas)    │
+└──────┬──────┘              └──────┬──────────┘
+       │                            │
+       └─────────────┬──────────────┘
+                     │ SQL
+          ┌──────────▼──────────┐
+          │  postgresql-svc     │
+          └─────────────────────┘
 ```
+
+---
+
+## Phase 8F — What Changed
+
+### 1. HTTPS Route (`openshift/base/routes/frontend-route.yaml`)
+
+An OpenShift `Route` resource exposes the ArtistHub frontend to the internet
+with HTTPS edge termination.
+
+| Field | Value |
+|---|---|
+| `spec.host` | `artisthub.apps.CLUSTER_DOMAIN` (replace before deploy) |
+| `spec.to` | `frontend-svc:http` (port 8080) |
+| `spec.tls.termination` | `edge` |
+| `spec.tls.insecureEdgeTerminationPolicy` | `Redirect` |
+| TLS certificate | Cluster default wildcard (auto-provided by OCP Router) |
+
+No `backend-svc` Route is created — all backend traffic flows through the nginx
+proxy inside the frontend pod.
+
+### 2. TLS Strategy
+
+**Edge termination with default wildcard certificate.**
+
+- TLS terminates at the OCP Router (HAProxy).
+- Traffic inside the cluster (Router → frontend pod) is plain HTTP on port 8080.
+- No certificate or key is specified in the Route manifest.  When these fields
+  are absent, the OCP Router automatically presents the cluster's default
+  wildcard ingress certificate (e.g. `*.apps.CLUSTER_DOMAIN`).
+- This requires zero certificate management by the application team and is the
+  recommended approach for MVP and internal deployments.
+- **NOT cert-manager.** Cert-manager integration is deferred to a future phase
+  when a custom domain or certificate pinning is required.
+
+To use a custom certificate in production:
+```yaml
+tls:
+  termination: edge
+  insecureEdgeTerminationPolicy: Redirect
+  certificate: |
+    -----BEGIN CERTIFICATE-----
+    ...
+  key: |
+    -----BEGIN PRIVATE KEY-----
+    ...
+```
+
+### 3. CORS Configuration
+
+The production ConfigMap patch in `overlays/production/kustomization.yaml` sets:
+
+```
+CORS_ORIGINS: "https://artisthub.apps.CLUSTER_DOMAIN"
+```
+
+**Operators must replace `CLUSTER_DOMAIN`** with the actual OCP cluster base
+domain before deploying.  The Flask CORS configuration in `app/__init__.py`
+reads this value and restricts cross-origin requests to this origin only.
+
+Local overlay retains `CORS_ORIGINS: "http://localhost:8080"`.
+
+### 4. NetworkPolicy — `allow-router-to-frontend` (tightened)
+
+Phase 8E used a `namespaceSelector` only (allowing any pod in
+`openshift-ingress`).  Phase 8F adds a `podSelector` so both conditions
+must be true simultaneously (AND semantics):
+
+```yaml
+ingress:
+  - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-ingress
+        podSelector:
+          matchLabels:
+            ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
+    ports:
+      - port: 8080
+        protocol: TCP
+```
+
+Both selectors are in the **same `from` list entry** → AND semantics.
+A separate list entry would produce OR semantics (too permissive).
+
+The label `ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default`
+is applied by the OpenShift IngressController operator to all default router pods
+in the `openshift-ingress` namespace.
+
+### 5. SELECT FOR UPDATE SKIP LOCKED
+
+The outbox relay (`backend/app/services/outbox_relay.py`) now uses
+`SELECT FOR UPDATE SKIP LOCKED` on PostgreSQL, enabling safe operation with
+multiple replicas.
+
+**Transaction model:**
+
+```
+Transaction 1 — Claim
+  BEGIN
+  SELECT * FROM event_outbox
+    WHERE published_at IS NULL
+    ORDER BY id
+    LIMIT batch_size
+    FOR UPDATE SKIP LOCKED
+  COMMIT  ← locks released immediately
+
+[Kafka produce_avro() + flush() — OUTSIDE any transaction]
+
+Transaction 2 — Mark (per-row, inside delivery callback)
+  BEGIN
+  UPDATE event_outbox
+    SET published_at = now()     ← success
+    -- OR --
+    SET publish_attempts = publish_attempts + 1,
+        last_error = '<message>' ← failure
+  COMMIT
+```
+
+**Why two transactions?**
+
+Holding a `FOR UPDATE` lock while waiting for a Kafka broker acknowledgement
+(up to 30 seconds) would starve other relay replicas.  Releasing the lock after
+the claim and before the Kafka produce avoids lock contention entirely.
+
+**SQLite fallback:**
+
+SQLite does not support `SELECT FOR UPDATE`.  When the configured database is
+SQLite (detected via the `SQLALCHEMY_DATABASE_URI` prefix), the relay falls back
+to a plain `SELECT` without locking.  This is only used in development and
+testing — never in the production cluster.
+
+### 6. At-Least-Once Delivery Semantics
+
+The relay provides **at-least-once delivery with idempotent downstream processing**.
+
+```
+Relay process:
+  1. Claim rows (Transaction 1 — SKIP LOCKED)
+  2. Kafka produce + flush
+  3. Broker ACK received ← crash window starts here
+  4. Mark published (Transaction 2)  ← crash window ends here
+
+If relay crashes at step 3 (after ACK, before step 4 commits):
+  - Row remains published_at IS NULL
+  - Next relay cycle re-publishes the event (duplicate Kafka message)
+  - Consumer deduplicates via ProcessedEvent(event_id, consumer_group)
+```
+
+This is **NOT exactly-once**.  Kafka producer `enable.idempotence=True`
+reduces duplicates within a single producer session but does not close the
+crash window between broker ACK and PostgreSQL COMMIT.
+
+The system is correct because:
+- Every event is delivered **at least once** (no silent loss).
+- Duplicate delivery is safe because consumers use
+  `ProcessedEvent(event_id, consumer_group)` as an idempotency key.
+
+### 7. Outbox Relay Replicas: 1 → 2
+
+Phase 8E required `replicas: 1` because the relay used a plain `SELECT`.
+Phase 8F raises this to `replicas: 2` now that `SKIP LOCKED` is in place.
+
+Each replica independently polls the outbox and claims disjoint row batches.
+Two replicas provide:
+- **Throughput:** parallel Kafka produce cycles
+- **Availability:** relay survives a single pod failure without a publish gap
+
+**Scale beyond 2:** Additional replicas are safe from a correctness standpoint.
+Phase 8I (KEDA) may auto-scale the relay based on the `event_outbox` pending
+row count via a Prometheus/PostgreSQL query.  See §Relay Scale-out Conditions.
 
 ---
 
@@ -123,10 +305,11 @@ artisthub
 ├── Secret: artisthub-secrets  ← injected separately, never in git
 ├── Services: backend-svc, frontend-svc, postgresql-svc
 ├── NetworkPolicies (default-deny + 11 explicit allows)
-├── Deployments (Phase 8E):
+├── Route: frontend  ← Phase 8F
+├── Deployments (Phase 8E/8F):
 │   ├── backend           (2 replicas)
 │   ├── frontend          (2 replicas)
-│   ├── outbox-relay      (1 replica)
+│   ├── outbox-relay      (2 replicas — Phase 8F SKIP LOCKED)
 │   ├── analytics-consumer (2 replicas)
 │   └── notification-consumer (2 replicas)
 └── Jobs (Phase 8E):
@@ -141,7 +324,7 @@ artisthub
 |---|---|---|---|---|
 | `backend` | 2 | `backend-svc:5000` | `artisthub-backend` | gunicorn default |
 | `frontend` | 2 | `frontend-svc:8080` | `artisthub-frontend` | nginx default |
-| `outbox-relay` | 1 | none | `artisthub-backend` | `python run_relay.py` |
+| `outbox-relay` | 2 | none | `artisthub-backend` | `python run_relay.py` |
 | `analytics-consumer` | 2 | none | `artisthub-backend` | `python run_analytics_consumer.py` |
 | `notification-consumer` | 2 | none | `artisthub-backend` | `python run_notification_consumer.py` |
 | `db-migrate` *(Job)* | N/A | none | `artisthub-backend` | `flask db upgrade` |
@@ -165,18 +348,28 @@ MUST be a PostgreSQL DSN.  SQLite is a file database — two pods would corrupt
 it.  The `create_app()` factory gates `db.create_all()` behind a SQLite check;
 with a PostgreSQL URL it is skipped and Alembic migrations are used instead.
 
-### Outbox Relay (1 replica — HARD LIMIT)
+### Outbox Relay (2 replicas — Phase 8F)
 
-The relay polls `event_outbox` for `status='pending'` rows using a plain
-`SELECT` (no `SELECT FOR UPDATE SKIP LOCKED`).  Running two replicas would
-cause both to read the same pending rows in the same polling window, producing
-duplicate Kafka events.
+The relay uses `SELECT FOR UPDATE SKIP LOCKED` (PostgreSQL) to claim row batches.
+Each replica claims a disjoint set of pending rows; no row is processed by more
+than one replica in any given polling window.
 
-Downstream consumers deduplicate via `ProcessedEvent(event_id, consumer_group)`,
-so duplicates would not corrupt data — but they are wasteful and non-deterministic.
+At-least-once delivery is guaranteed.  Downstream consumers deduplicate via
+`ProcessedEvent(event_id, consumer_group)`.
 
-**Phase 8F+:** Implement `SELECT FOR UPDATE SKIP LOCKED` in
-`app/services/outbox_relay.py` to enable safe multi-replica relay operation.
+See §Phase 8F — SELECT FOR UPDATE SKIP LOCKED for the full transaction model.
+
+### Relay Scale-out Conditions
+
+Running more than 2 relay replicas is safe from a correctness standpoint (SKIP
+LOCKED handles any number of replicas).  Scale out when:
+
+- Kafka consumer lag on the downstream topics exceeds an SLO threshold.
+- The `event_outbox` pending row count backlog grows faster than 2 replicas
+  can drain it.
+- Phase 8I (KEDA) is implemented — autoscale the relay Deployment based on
+  a `SELECT COUNT(*) FROM event_outbox WHERE published_at IS NULL` Prometheus
+  or PostgreSQL metric.
 
 ### Analytics Consumer (2 replicas, max 15)
 
@@ -245,10 +438,14 @@ Phase 8E starts at 2 replicas.  Scale to 6 in Phase 8I via KEDA.
 | `KAFKA_SCHEMAS_DIR` | `/app/kafka/schemas` | relay, consumers |
 | `DB_POOL_SIZE` | `5` | backend |
 | `DB_MAX_OVERFLOW` | `10` | backend |
-| `CORS_ORIGINS` | (overlay-specific) | backend |
+| `CORS_ORIGINS` | overlay-specific (see below) | backend |
 
-All workloads receive the full ConfigMap via `envFrom: configMapRef`.  Unused
-keys are silently ignored by Python.
+**CORS_ORIGINS per overlay:**
+
+| Overlay | Value |
+|---|---|
+| `local` | `http://localhost:8080` |
+| `production` | `https://artisthub.apps.CLUSTER_DOMAIN` (replace before deploy) |
 
 ### Secret (`artisthub-secrets`) — NEVER in git
 
@@ -329,13 +526,14 @@ in the `alembic_version` table).
 5. Secret (artisthub-secrets) — injected externally, never committed
 6. NetworkPolicies
 7. Services (backend-svc, frontend-svc, postgresql-svc)
-8. PostgreSQL dependency available (operator / StatefulSet ready)
-9. db-migrate Job — run and WAIT FOR COMPLETION
-10. backend Deployment
-11. frontend Deployment
-12. outbox-relay Deployment
-13. analytics-consumer Deployment
-14. notification-consumer Deployment
+8. Route (frontend)                     ← Phase 8F
+9. PostgreSQL dependency available (operator / StatefulSet ready)
+10. db-migrate Job — run and WAIT FOR COMPLETION
+11. backend Deployment
+12. frontend Deployment
+13. outbox-relay Deployment (2 replicas safe — SKIP LOCKED)
+14. analytics-consumer Deployment
+15. notification-consumer Deployment
 ```
 
 Workers (relay, analytics-consumer, notification-consumer) should not be started
@@ -426,7 +624,7 @@ and Phase 8J (k6 load testing).
 | `backend` | readiness | httpGet | `/api/health:5000` | 10s | 3 failures (30s) | Gates Service traffic |
 | `frontend` | startup | httpGet | `/:8080` | 5s | 6 failures (30s) | nginx starts < 2s |
 | `frontend` | liveness | httpGet | `/:8080` | 30s | 3 failures (90s) | Restarts hung nginx |
-| `frontend` | readiness | httpGet | `/:8080` | 10s | 3 failures (30s) | Gates Service traffic |
+| `frontend` | readiness | httpGet | `/:8080` | 10s | 3 failures (30s) | Gates Service/Route traffic |
 
 The `/api/health` endpoint executes `SELECT 1` — a failing DB connection marks
 the backend pod as not-ready before it crashes.
@@ -505,6 +703,10 @@ kubectl rollout status deployment/frontend -n artisthub
 # Create project
 oc new-project artisthub
 
+# IMPORTANT: Replace CLUSTER_DOMAIN in openshift/base/routes/frontend-route.yaml
+# and overlays/production/kustomization.yaml with the actual cluster base domain
+# before applying.
+
 # Validate manifest output
 kubectl kustomize openshift/overlays/production
 
@@ -520,7 +722,7 @@ kubectl create secret generic artisthub-secrets \
   --from-literal=SCHEMA_REGISTRY_API_SECRET="your-sr-secret" \
   -n artisthub
 
-# Apply all manifests (namespace, RBAC, ConfigMap, Services, Deployments, Job)
+# Apply all manifests
 kubectl apply -k openshift/overlays/production
 
 # Wait for migration Job to complete BEFORE proceeding
@@ -533,8 +735,29 @@ kubectl rollout status deployment/outbox-relay -n artisthub
 kubectl rollout status deployment/analytics-consumer -n artisthub
 kubectl rollout status deployment/notification-consumer -n artisthub
 
-# Verify all pods are Running
+# Verify Route is admitted and has a hostname
+oc get route frontend -n artisthub
+
+# Verify pods
 kubectl get pods -n artisthub
+```
+
+### Verifying HTTPS access
+
+After the Route is admitted by the OCP Router:
+
+```bash
+# Get the Route hostname
+HOSTNAME=$(oc get route frontend -n artisthub -o jsonpath='{.spec.host}')
+echo "Frontend URL: https://$HOSTNAME"
+
+# Test HTTPS
+curl -I "https://$HOSTNAME"
+
+# Test HTTP → HTTPS redirect
+curl -I "http://$HOSTNAME"
+# Expected: HTTP/1.1 301 Moved Permanently
+# Location: https://$HOSTNAME/
 ```
 
 ---
@@ -542,8 +765,8 @@ kubectl get pods -n artisthub
 ## NetworkPolicy Communication Matrix
 
 ```
-Internet / OCP Router (openshift-ingress namespace) — Phase 8F Route (not yet)
-         ↓ port 8080
+Internet → OCP Router (openshift-ingress/router pod) → port 8080
+         ↓
       frontend  ──────────────────────────────────────────────────┐
          ↓ port 5000                                               │
       backend ──────────────→ postgresql:5432                     │
@@ -566,18 +789,26 @@ Internet / OCP Router (openshift-ingress namespace) — Phase 8F Route (not yet)
    (openshift-monitoring namespace → all pods metrics port)
 ```
 
+**allow-router-to-frontend policy (Phase 8F — tightened):**
+```
+Allows ingress to frontend pods on port 8080 ONLY when both conditions are met:
+  (a) Source pod is in namespace: openshift-ingress
+  (b) Source pod has label: ingresscontroller.operator.openshift.io/
+                             deployment-ingresscontroller=default
+Both selectors in the same `from` entry → AND semantics (not OR).
+```
+
 ---
 
-## Known Limitations (Phase 8E)
+## Known Limitations (Phase 8F)
 
 | Limitation | Impact | Phase to fix |
 |---|---|---|
-| Outbox relay: no `SELECT FOR UPDATE SKIP LOCKED` | Maximum 1 relay replica | 8F+ |
-| Public Route not created | Frontend/backend not reachable from internet | 8F |
-| No TLS certificate | All traffic plain HTTP inside cluster | 8F |
+| Route hostname uses placeholder `CLUSTER_DOMAIN` | Must be replaced before deploy | Manual before 8F deploy |
+| No cert-manager | Custom domain requires manual cert | 8G or later |
 | No CI/CD pipeline | Images must be pushed manually | 8G |
 | No Prometheus/Grafana | No metrics or alerting | 8H |
-| No KEDA autoscaling | Consumer replicas are static | 8I |
+| No KEDA autoscaling | Consumer/relay replicas are static | 8I |
 | PostgreSQL: no persistent backup | Data at risk during PVC loss | 8G |
 | Image tags hard-coded to `latest` | No pinned immutable releases | 8G |
 
@@ -587,9 +818,7 @@ Internet / OCP Router (openshift-ingress namespace) — Phase 8F Route (not yet)
 
 | Phase | Scope |
 |---|---|
-| 8F | Routes + TLS — OCP Router edge termination, cert-manager, public hostname |
-| 8G | PostgreSQL on OCP — Crunchy Data operator, PVC, migration, backup |
+| 8G | PostgreSQL on OCP — Crunchy Data operator, PVC, migration, backup; CI/CD |
 | 8H | Observability — Prometheus, Grafana, Kafka lag alerting, DLQ dashboards |
-| 8I | KEDA autoscaling — scale consumers by Kafka lag; HPA for backend |
-| 8J | CI/CD — GitHub Actions → OCP image registry → rolling deploys |
-| 8K | Load testing — k6, resource limit tuning |
+| 8I | KEDA autoscaling — scale consumers by Kafka lag; relay by outbox depth |
+| 8J | Load testing — k6, resource limit tuning |

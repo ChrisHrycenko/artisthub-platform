@@ -40,3 +40,5 @@ resources:
   - deployments/outbox-relay.yaml
   - deployments/analytics-consumer.yaml
   - deployments/notification-consumer.yaml
+  # Phase 8F — OpenShift Route (HTTPS edge termination, HTTP→HTTPS redirect)
+  - routes/frontend-route.yaml

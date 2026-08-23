@@ -1,0 +1,100 @@
+# openshift/base/routes/frontend-route.yaml
+#
+# OpenShift Route — public HTTPS ingress for the ArtistHub frontend.
+#
+# Phase 8F — TLS Route
+# =====================
+# This resource is OpenShift-specific (kind: Route).  It will not apply on
+# plain Kubernetes (use an Ingress resource there instead), but the YAML is
+# structurally valid and `kubectl kustomize` renders it without error.
+#
+# TLS Strategy — Edge Termination with Default Wildcard Certificate
+# -----------------------------------------------------------------
+# Edge termination means TLS is terminated at the OCP Router (HAProxy).
+# Traffic between the Router and the frontend pod is plain HTTP on port 8080
+# inside the cluster — no in-cluster TLS is required.
+#
+# No `certificate`, `key`, or `caCertificate` fields are specified in the
+# `tls` section.  When these are absent, the OCP Router automatically presents
+# the cluster's default wildcard ingress certificate (e.g.
+# *.apps.CLUSTER_DOMAIN issued by the cluster's CA).  This is the recommended
+# approach for MVP/internal deployments and requires zero certificate management
+# by the application team.
+#
+# To use a custom certificate in production:
+#   Add `tls.certificate` and `tls.key` fields to the Route, OR use
+#   cert-manager with a Certificate CRD targeting this Route's hostname.
+#
+# insecureEdgeTerminationPolicy: Redirect
+# ----------------------------------------
+# Plain HTTP (port 80) requests to the Route hostname are automatically
+# redirected to HTTPS (301) by the OCP Router.  No HTTP traffic reaches the
+# backend pods.
+#
+# Hostname
+# --------
+# The `host` field uses a placeholder: artisthub.apps.CLUSTER_DOMAIN
+# Operators MUST replace CLUSTER_DOMAIN with the actual cluster domain
+# (e.g. artisthub.apps.cluster-abc123.openshift.example.com) before applying.
+# Alternatively patch this value in the production overlay's kustomization.yaml.
+#
+# Target Service
+# --------------
+# Routes to frontend-svc on port 8080 (nginx-unprivileged).
+# The backend-svc is NOT exposed via a Route — all backend traffic flows
+# through the nginx proxy inside the frontend pod.
+#
+# Labels follow the same app.kubernetes.io/* convention as all other resources.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: frontend
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/name: frontend-route
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Public HTTPS Route for the ArtistHub frontend (nginx-unprivileged).
+      TLS is edge-terminated by the OCP Router using the cluster default
+      wildcard certificate.  HTTP traffic is redirected to HTTPS.
+      Replace CLUSTER_DOMAIN in spec.host with the actual cluster domain.
+spec:
+  # ------------------------------------------------------------------ #
+  # Hostname — MUST be updated before production deployment.            #
+  # Replace CLUSTER_DOMAIN with the actual OCP cluster base domain.    #
+  # Example: artisthub.apps.cluster-abc123.openshift.example.com       #
+  # ------------------------------------------------------------------ #
+  host: artisthub.apps.CLUSTER_DOMAIN
+
+  # ------------------------------------------------------------------ #
+  # Target Service                                                       #
+  # ------------------------------------------------------------------ #
+  to:
+    kind: Service
+    name: frontend-svc
+    weight: 100
+
+  port:
+    targetPort: http    # matches the named port in services.yaml (port 8080)
+
+  # ------------------------------------------------------------------ #
+  # TLS configuration                                                    #
+  # ------------------------------------------------------------------ #
+  tls:
+    # Edge: TLS terminates at the OCP Router; backend receives plain HTTP.
+    termination: edge
+
+    # Redirect all HTTP traffic to HTTPS (301 Moved Permanently).
+    insecureEdgeTerminationPolicy: Redirect
+
+    # No certificate/key fields → OCP Router uses the cluster default
+    # wildcard certificate automatically.  See header comment above.
+
+  # ------------------------------------------------------------------ #
+  # Wildcard policy                                                      #
+  # ------------------------------------------------------------------ #
+  wildcardPolicy: None

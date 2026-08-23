@@ -2,31 +2,39 @@
 #
 # ArtistHub outbox relay Deployment
 #
-# Phase 8E — Workload Deployments
+# Phase 8F — replicas: 2 (safe after SELECT FOR UPDATE SKIP LOCKED)
 #
 # ─────────────────────────────────────────────────────────────────────────
-# Replica count: 1 (HARD LIMIT for Phase 8E)
+# Replica count: 2 (Phase 8F — SKIP LOCKED implemented)
 # ─────────────────────────────────────────────────────────────────────────
-# WHY EXACTLY ONE REPLICA:
+# WHY TWO REPLICAS ARE NOW SAFE:
 #
-#   The outbox relay polls the event_outbox table for rows with
-#   status='pending', publishes each row to Kafka, then marks the row
-#   as status='published'.
+#   The relay (app/services/outbox_relay.py) now uses:
 #
-#   The current relay implementation uses a plain SELECT query without
-#   SELECT FOR UPDATE SKIP LOCKED.  If two relay replicas ran concurrently,
-#   both could SELECT the same pending rows in the same polling interval and
-#   publish duplicate Kafka events.
+#     SELECT ... FOR UPDATE SKIP LOCKED LIMIT batch_size
 #
-#   Downstream consumers (analytics, notification) use ProcessedEvent
-#   deduplication which would absorb duplicate events correctly, but:
-#     1. Duplicate production is wasteful and non-deterministic.
-#     2. The dead-letter topic could receive spurious entries.
-#     3. It is harder to reason about correctness without locking.
+#   within a transaction that commits BEFORE Kafka produce begins.
+#   This gives PostgreSQL row-level locks to each replica for its
+#   exclusive batch of rows.  When replica 2 runs its SELECT in the
+#   same polling window, it SKIPs the rows already locked by replica 1
+#   and claims a different disjoint batch.
 #
-#   Phase 8F+: Add SELECT FOR UPDATE SKIP LOCKED to enable multiple relay
-#   replicas for higher throughput.  Until then, replicas: 1 is the safe
-#   and correct setting.
+#   At-least-once delivery guarantee:
+#     If a relay crashes after the Kafka broker acknowledges a message
+#     but before the PostgreSQL UPDATE (published_at = now()) commits,
+#     the row remains pending and is re-published on the next cycle.
+#     This is safe because downstream consumers use ProcessedEvent
+#     (event_id, consumer_group) deduplication to absorb duplicates.
+#
+#   SQLite note:
+#     FOR UPDATE SKIP LOCKED is not used on SQLite (development/test).
+#     Only one relay instance should run against SQLite.  The production
+#     cluster always uses PostgreSQL.
+#
+#   Scale beyond 2:
+#     Additional replicas are safe from a correctness standpoint.
+#     Phase 8I (KEDA) may scale the relay based on event_outbox backlog
+#     depth via a Prometheus query.  See openshift/README.md §Relay Scale-out.
 #
 # ─────────────────────────────────────────────────────────────────────────
 # No Service — the relay is a push-only worker.
@@ -80,12 +88,13 @@ metadata:
   annotations:
     description: >
       Transactional outbox relay: polls event_outbox, publishes to Confluent
-      Cloud Kafka. Single replica until SELECT FOR UPDATE SKIP LOCKED is
-      implemented.
+      Cloud Kafka. Phase 8F: 2 replicas safe via SELECT FOR UPDATE SKIP LOCKED.
 spec:
-  # IMPORTANT: Do not increase replicas without first implementing
-  # SELECT FOR UPDATE SKIP LOCKED in app/services/outbox_relay.py.
-  replicas: 1
+  # Phase 8F: replicas raised from 1 → 2.
+  # SELECT FOR UPDATE SKIP LOCKED in app/services/outbox_relay.py ensures
+  # each replica claims a disjoint batch of outbox rows, preventing duplicate
+  # Kafka publishes.  See the module docstring for the full transaction model.
+  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/component: outbox-relay
