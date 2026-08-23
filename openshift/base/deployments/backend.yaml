@@ -73,6 +73,16 @@ metadata:
     # Phase 8H: add Prometheus scrape annotations here.
 spec:
   replicas: 2
+  # ------------------------------------------------------------------ #
+  # Rolling update strategy                                             #
+  # maxSurge=1: one extra pod created before old one terminates.       #
+  # maxUnavailable=0: zero downtime — traffic never drops below 2 pods.#
+  # ------------------------------------------------------------------ #
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/component: backend

@@ -1,0 +1,529 @@
+# .github/workflows/release.yml
+#
+# ArtistHub build → scan → publish pipeline.
+#
+# Phase 8G — immutable image build and registry publication.
+#
+# Trigger: push to main (after CI quality gate passes, by branch protection).
+#          Also callable via workflow_dispatch for manual re-publish.
+#
+# What this workflow does:
+#   quality          fan-out to the CI jobs (lint, test-sqlite, postgres, schema)
+#   build-backend    build docker/Dockerfile tagged with git SHA + :main
+#   build-frontend   build docker/Dockerfile.frontend.openshift same tags
+#   scan-backend     Trivy vulnerability scan on backend image
+#   scan-frontend    Trivy vulnerability scan on frontend image
+#   publish          push both images to the configured registry
+#   summarise        write a human-readable run summary with digests + SHA
+#
+# Deployment is NOT triggered automatically here.
+# Use deploy-production.yml (manual workflow_dispatch / Environment approval).
+#
+# Required GitHub repository/environment secrets (set in GitHub → Settings →
+# Secrets and variables → Actions, or in the "production" Environment):
+#
+#   REGISTRY_HOST        e.g. ghcr.io  or  quay.io  or  image-registry…
+#   REGISTRY_NAMESPACE   e.g. your-org/artisthub  or  openshift project name
+#   REGISTRY_USERNAME    service account / bot username for the registry
+#   REGISTRY_PASSWORD    service account token / password  (never printed)
+#
+# If REGISTRY_HOST is not set, the publish job is skipped (dry-run mode).
+# This allows CI to build+scan even when registry credentials are not yet
+# configured, without failing the pipeline.
+#
+# Image naming:
+#   <REGISTRY_HOST>/<REGISTRY_NAMESPACE>/backend:<sha>
+#   <REGISTRY_HOST>/<REGISTRY_NAMESPACE>/backend:main
+#   <REGISTRY_HOST>/<REGISTRY_NAMESPACE>/frontend:<sha>
+#   <REGISTRY_HOST>/<REGISTRY_NAMESPACE>/frontend:main
+#
+# The :<sha> tag is the immutable production reference.
+# The :main convenience tag is mutable (always points to latest main build).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual re-publish"
+        required: false
+        default: "Manual trigger"
+
+# Cancel in-progress runs on the same branch to avoid stale deploys.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Short commit SHA used as the immutable image tag.
+  IMAGE_TAG: ${{ github.sha }}
+  # 7-character short SHA for human-readable labels.
+  SHORT_SHA: ${{ github.sha }}
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 1. Quality gate (re-runs CI jobs; deployment cannot proceed without it)
+  # ──────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - run: |
+          cd backend
+          flake8 app consumers run.py run_relay.py \
+                 run_analytics_consumer.py run_notification_consumer.py \
+                 tests/test_outbox_relay_concurrency.py
+
+  test-sqlite:
+    name: Test — SQLite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - run: |
+          cd backend
+          pytest --cov=app --cov-fail-under=80 -q
+
+  test-postgres:
+    name: Test — PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: artisthub
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: artisthub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          SECRET_KEY: ci-test-secret-key-not-for-prod
+          FLASK_APP: run:app
+          FLASK_ENV: production
+        run: |
+          cd backend
+          flask db upgrade
+      - name: Run PostgreSQL + concurrency tests
+        env:
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          SECRET_KEY: ci-test-secret-key-not-for-prod
+        run: |
+          cd backend
+          pytest tests/test_postgres_integration.py \
+                 tests/test_outbox_relay_concurrency.py \
+                 -v --tb=short
+
+  schema-check:
+    name: Schema validation (Avro)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install fastavro==1.12.2
+      - run: python kafka/validate_schemas.py
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 2. Build backend image
+  # ──────────────────────────────────────────────────────────────────────
+  build-backend:
+    name: Build — backend image
+    runs-on: ubuntu-latest
+    needs: [lint, test-sqlite, test-postgres, schema-check]
+
+    outputs:
+      # Full image ref including registry (used by scan + publish).
+      # If no registry is configured, this is the local tag only.
+      image-ref: ${{ steps.meta.outputs.image-ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          SHORT="${GITHUB_SHA::7}"
+          REGISTRY_HOST="${{ secrets.REGISTRY_HOST }}"
+          REGISTRY_NS="${{ secrets.REGISTRY_NAMESPACE }}"
+          if [ -n "$REGISTRY_HOST" ] && [ -n "$REGISTRY_NS" ]; then
+            IMAGE_BASE="${REGISTRY_HOST}/${REGISTRY_NS}/backend"
+          else
+            IMAGE_BASE="artisthub-backend"
+          fi
+          echo "image-base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "image-ref=${IMAGE_BASE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha-tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short-sha=${SHORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          # Load into local Docker daemon for scan; push happens in publish job.
+          push: false
+          load: true
+          tags: |
+            ${{ steps.meta.outputs.image-ref }}
+            ${{ steps.meta.outputs.image-base }}:main
+          # OCI labels for traceability.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.title=ArtistHub Backend
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container smoke test
+        run: |
+          docker run --rm -d \
+            --name artisthub-smoke-${{ steps.meta.outputs.short-sha }} \
+            -e SECRET_KEY=ci-smoke-test-key \
+            -e FLASK_ENV=production \
+            -p 15000:5000 \
+            "${{ steps.meta.outputs.image-ref }}"
+          # Allow up to 15s for gunicorn to start.
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:15000/api/health > /dev/null 2>&1; then
+              echo "✓ /api/health responded"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:15000/api/health
+          docker stop "artisthub-smoke-${{ steps.meta.outputs.short-sha }}"
+
+      - name: Save image as tar (for scan + publish jobs)
+        run: |
+          docker save "${{ steps.meta.outputs.image-ref }}" \
+            | gzip > /tmp/backend-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-image-${{ github.sha }}
+          path: /tmp/backend-image.tar.gz
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 3. Build frontend image
+  # ──────────────────────────────────────────────────────────────────────
+  build-frontend:
+    name: Build — frontend image
+    runs-on: ubuntu-latest
+    needs: [lint, test-sqlite]
+
+    outputs:
+      image-ref: ${{ steps.meta.outputs.image-ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image metadata
+        id: meta
+        run: |
+          REGISTRY_HOST="${{ secrets.REGISTRY_HOST }}"
+          REGISTRY_NS="${{ secrets.REGISTRY_NAMESPACE }}"
+          if [ -n "$REGISTRY_HOST" ] && [ -n "$REGISTRY_NS" ]; then
+            IMAGE_BASE="${REGISTRY_HOST}/${REGISTRY_NS}/frontend"
+          else
+            IMAGE_BASE="artisthub-frontend"
+          fi
+          echo "image-base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
+          echo "image-ref=${IMAGE_BASE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend image (OpenShift)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.frontend.openshift
+          push: false
+          load: true
+          tags: |
+            ${{ steps.meta.outputs.image-ref }}
+            ${{ steps.meta.outputs.image-base }}:main
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.title=ArtistHub Frontend
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save image as tar
+        run: |
+          docker save "${{ steps.meta.outputs.image-ref }}" \
+            | gzip > /tmp/frontend-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image-${{ github.sha }}
+          path: /tmp/frontend-image.tar.gz
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 4. Vulnerability scan — backend
+  # ──────────────────────────────────────────────────────────────────────
+  scan-backend:
+    name: Scan — backend (Trivy)
+    runs-on: ubuntu-latest
+    needs: build-backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-image-${{ github.sha }}
+          path: /tmp
+
+      - name: Load image
+        run: docker load < /tmp/backend-image.tar.gz
+
+      - name: Compute image ref
+        id: ref
+        run: |
+          REGISTRY_HOST="${{ secrets.REGISTRY_HOST }}"
+          REGISTRY_NS="${{ secrets.REGISTRY_NAMESPACE }}"
+          if [ -n "$REGISTRY_HOST" ] && [ -n "$REGISTRY_NS" ]; then
+            echo "image-ref=${REGISTRY_HOST}/${REGISTRY_NS}/backend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image-ref=artisthub-backend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Trivy scan (CRITICAL blocks; HIGH reported)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.ref.outputs.image-ref }}
+          format: table
+          # CRITICAL severity blocks the pipeline.
+          # HIGH severity produces a report but does not block.
+          # Exceptions: document in docs/security-exceptions.md and add to
+          # .trivyignore with a dated justification comment.
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Run Trivy scan (HIGH — report only, non-blocking)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.ref.outputs.image-ref }}
+          format: sarif
+          output: trivy-backend.sarif
+          severity: HIGH
+          exit-code: "0"
+          ignore-unfixed: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-backend-sarif-${{ github.sha }}
+          path: trivy-backend.sarif
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 5. Vulnerability scan — frontend
+  # ──────────────────────────────────────────────────────────────────────
+  scan-frontend:
+    name: Scan — frontend (Trivy)
+    runs-on: ubuntu-latest
+    needs: build-frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-image-${{ github.sha }}
+          path: /tmp
+
+      - name: Load image
+        run: docker load < /tmp/frontend-image.tar.gz
+
+      - name: Compute image ref
+        id: ref
+        run: |
+          REGISTRY_HOST="${{ secrets.REGISTRY_HOST }}"
+          REGISTRY_NS="${{ secrets.REGISTRY_NAMESPACE }}"
+          if [ -n "$REGISTRY_HOST" ] && [ -n "$REGISTRY_NS" ]; then
+            echo "image-ref=${REGISTRY_HOST}/${REGISTRY_NS}/frontend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "image-ref=artisthub-frontend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Trivy scan (CRITICAL blocks)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.ref.outputs.image-ref }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Run Trivy scan (HIGH — report only)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.ref.outputs.image-ref }}
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: HIGH
+          exit-code: "0"
+          ignore-unfixed: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-frontend-sarif-${{ github.sha }}
+          path: trivy-frontend.sarif
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 6. Publish images to registry
+  # ──────────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish images
+    runs-on: ubuntu-latest
+    needs: [scan-backend, scan-frontend]
+
+    # Skip publish if registry credentials are not configured.
+    # This allows the pipeline to build+scan without a registry.
+    if: |
+      secrets.REGISTRY_HOST != '' &&
+      secrets.REGISTRY_NAMESPACE != '' &&
+      secrets.REGISTRY_USERNAME != '' &&
+      secrets.REGISTRY_PASSWORD != ''
+
+    outputs:
+      backend-digest: ${{ steps.push-backend.outputs.digest }}
+      frontend-digest: ${{ steps.push-frontend.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: backend-image-${{ github.sha }}
+          path: /tmp
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-image-${{ github.sha }}
+          path: /tmp
+
+      - name: Load images
+        run: |
+          docker load < /tmp/backend-image.tar.gz
+          docker load < /tmp/frontend-image.tar.gz
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          # REGISTRY_PASSWORD is never echoed to logs.
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Push backend image
+        id: push-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/backend:${{ github.sha }}
+            ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/backend:main
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push frontend image
+        id: push-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.frontend.openshift
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/frontend:${{ github.sha }}
+            ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/frontend:main
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Log digests
+        run: |
+          echo "### Image publication summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | SHA tag | Digest |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| backend | \`${{ github.sha }}\` | \`${{ steps.push-backend.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| frontend | \`${{ github.sha }}\` | \`${{ steps.push-frontend.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 7. Run summary (always runs)
+  # ──────────────────────────────────────────────────────────────────────
+  summarise:
+    name: Release summary
+    runs-on: ubuntu-latest
+    needs: [publish]
+    if: always()
+
+    steps:
+      - name: Write summary
+        run: |
+          echo "## ArtistHub Release — ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Workflow run | ${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | ${{ github.event_name }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploy to production via: **Actions → Deploy to Production → Run workflow**" >> "$GITHUB_STEP_SUMMARY"

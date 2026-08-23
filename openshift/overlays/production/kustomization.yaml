@@ -53,16 +53,29 @@ labels:
     includeSelectors: false
     includeTemplates: false
 
-# Image registry overrides — Phase 8E Deployments.
-# Replace <REGISTRY> and <TAG> with real values before deployment.
-# All three backend-derived workloads (backend, outbox-relay, analytics-consumer,
-# notification-consumer, db-migrate Job) use the same backend image.
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 8G — Immutable image overrides
+# ─────────────────────────────────────────────────────────────────────────
+# CI/CD (deploy-production.yml) updates Deployment images via
+#   kubectl set image deployment/<name> <container>=<registry>/<ns>/backend:<sha>
+# so this block does NOT need to contain a live SHA in the committed file.
 #
-# Uncomment and fill in real values:
+# For manual deployments or emergency hotfixes without CI:
+#   1. Uncomment the `images:` block below.
+#   2. Set newName to your registry path.
+#   3. Set newTag to the commit SHA (NOT "latest").
+#   4. Run: kubectl apply -k openshift/overlays/production
+#
 # images:
+#   # Backend image — used by backend, outbox-relay, analytics-consumer,
+#   # notification-consumer Deployments and db-migrate Job.
 #   - name: artisthub-backend
-#     newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend
-#     newTag: v0.3.0
+#     newName: ghcr.io/YOUR_ORG/artisthub/backend
+#     newTag: REPLACE_WITH_COMMIT_SHA
+#   # Frontend image — used by frontend Deployment only.
 #   - name: artisthub-frontend
-#     newName: image-registry.openshift-image-registry.svc:5000/artisthub/frontend
-#     newTag: v0.3.0
+#     newName: ghcr.io/YOUR_ORG/artisthub/frontend
+#     newTag: REPLACE_WITH_COMMIT_SHA
+#
+# OpenShift internal registry alternative:
+#   newName: image-registry.openshift-image-registry.svc:5000/artisthub/backend

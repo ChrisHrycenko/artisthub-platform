@@ -95,6 +95,16 @@ spec:
   # each replica claims a disjoint batch of outbox rows, preventing duplicate
   # Kafka publishes.  See the module docstring for the full transaction model.
   replicas: 2
+  # Rolling strategy for the relay:
+  # maxSurge=1: briefly runs 3 relay instances during a deploy.
+  # maxUnavailable=1: one old replica can terminate before the new one is ready.
+  # SKIP LOCKED ensures the extra relay replica during surge cannot duplicate
+  # any row that is still being processed by an old relay instance.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/component: outbox-relay

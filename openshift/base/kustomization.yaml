@@ -25,6 +25,8 @@ resources:
   - namespace.yaml
   - serviceaccounts.yaml
   - rbac.yaml
+  # Phase 8G — CI/CD deploy ServiceAccount + Role
+  - rbac-cicd.yaml
   - configmap.yaml
   - secrets.example.yaml
   - networkpolicies.yaml
@@ -34,7 +36,7 @@ resources:
   - security-context.yaml
   # Phase 8E — migration Job (run before Deployments; see jobs/db-migrate.yaml)
   - jobs/db-migrate.yaml
-  # Phase 8E — workload Deployments
+  # Phase 8E — workload Deployments (Phase 8G: rolling-update strategy added)
   - deployments/backend.yaml
   - deployments/frontend.yaml
   - deployments/outbox-relay.yaml

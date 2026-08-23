@@ -1,0 +1,336 @@
+# .github/workflows/deploy-production.yml
+#
+# ArtistHub production deployment workflow.
+#
+# Phase 8G — immutable-image deploy to OpenShift.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Trigger: MANUAL only (workflow_dispatch).
+# ─────────────────────────────────────────────────────────────────────────
+# Production deployments require explicit operator approval.
+# This workflow is NEVER triggered automatically on push.
+#
+# Why manual-only?
+#   - ArtistHub is a production platform with real user data.
+#   - Automatic deploy on merge requires 100% confidence in the test suite
+#     and zero manual validation steps — this is not yet the case in Phase 8G.
+#   - The team can graduate to auto-deploy (push to main → deploy) in a future
+#     phase once smoke tests, canary releases, and rollback are fully automated.
+#
+# GitHub Environment: "production"
+#   - Set required reviewers in GitHub → Settings → Environments → production.
+#   - Production secrets (OPENSHIFT_TOKEN, REGISTRY_PASSWORD) live in the
+#     "production" environment, NOT in repository-level secrets, so they are
+#     not accessible to PR workflows.
+#   - See docs/cicd-architecture.md §GitHub Environments for setup instructions.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Required secrets (production Environment):
+# ─────────────────────────────────────────────────────────────────────────
+#   OPENSHIFT_SERVER     e.g. https://api.cluster-abc123.openshift.example.com:6443
+#   OPENSHIFT_TOKEN      Service account token for sa-cicd-deploy
+#   OPENSHIFT_NAMESPACE  artisthub
+#   REGISTRY_HOST        Registry hostname (e.g. ghcr.io or quay.io)
+#   REGISTRY_NAMESPACE   Registry namespace/org
+#   REGISTRY_USERNAME    Registry service account username
+#   REGISTRY_PASSWORD    Registry service account token (never printed)
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Deployment order enforced by this workflow:
+# ─────────────────────────────────────────────────────────────────────────
+#   1. Validate inputs (SHA exists in registry)
+#   2. Kustomize render (local validation before touching the cluster)
+#   3. Apply ConfigMap/RBAC/Services/NetworkPolicies (foundation — idempotent)
+#   4. Delete previous db-migrate Job (Jobs cannot be re-applied with same name)
+#   5. Apply migration Job with new image tag
+#   6. Wait for migration Job COMPLETE (kubectl wait --timeout=180s)
+#   7. If migration fails → stop; log migration output; do NOT roll workloads
+#   8. Apply all five Deployments with new image tag
+#   9. Wait for rollout complete (kubectl rollout status, timeout 300s each)
+#  10. Run smoke checks (/api/health, /)
+#  11. Write deployment summary
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Rollback procedure (documented; NOT automatic for DB migrations):
+# ─────────────────────────────────────────────────────────────────────────
+#   - Deployment rollback:  kubectl rollout undo deployment/<name> -n artisthub
+#   - Image rollback:       re-run this workflow with a previous SHA
+#   - DB migration rollback: MANUAL (requires `flask db downgrade` from operator
+#     with a tested downgrade path). See docs/cicd-architecture.md §Rollback.
+#   - NEVER run flask db downgrade automatically.
+
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Git SHA of the images to deploy (must be published by release.yml)"
+        required: true
+      reason:
+        description: "Reason for deployment (included in run summary)"
+        required: false
+        default: "Scheduled production release"
+      skip_smoke:
+        description: "Skip smoke tests? (true only if cluster has no public Route yet)"
+        required: false
+        default: "false"
+
+# Never allow two production deploys in parallel.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Deploy — runs in the "production" GitHub Environment (requires approval)
+  # ──────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to OpenShift (production)
+    runs-on: ubuntu-latest
+    environment: production
+
+    env:
+      IMAGE_SHA: ${{ github.event.inputs.image_sha }}
+      OCP_NS: ${{ secrets.OPENSHIFT_NAMESPACE }}
+      BACKEND_IMAGE: ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/backend
+      FRONTEND_IMAGE: ${{ secrets.REGISTRY_HOST }}/${{ secrets.REGISTRY_NAMESPACE }}/frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ #
+      # 1. Install tools                                                     #
+      # ------------------------------------------------------------------ #
+      - name: Install kubectl + oc
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4"
+
+      # ------------------------------------------------------------------ #
+      # 2. Authenticate to OpenShift                                         #
+      # ------------------------------------------------------------------ #
+      - name: Log in to OpenShift
+        uses: redhat-actions/oc-login@v1
+        with:
+          openshift_server_url: ${{ secrets.OPENSHIFT_SERVER }}
+          openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+          namespace: ${{ secrets.OPENSHIFT_NAMESPACE }}
+          insecure_skip_tls_verify: false
+
+      # ------------------------------------------------------------------ #
+      # 3. Validate inputs                                                   #
+      # ------------------------------------------------------------------ #
+      - name: Verify images exist in registry
+        run: |
+          echo "Checking backend image: ${BACKEND_IMAGE}:${IMAGE_SHA}"
+          docker manifest inspect "${BACKEND_IMAGE}:${IMAGE_SHA}" > /dev/null || \
+            { echo "ERROR: backend image not found for SHA ${IMAGE_SHA}"; exit 1; }
+          echo "Checking frontend image: ${FRONTEND_IMAGE}:${IMAGE_SHA}"
+          docker manifest inspect "${FRONTEND_IMAGE}:${IMAGE_SHA}" > /dev/null || \
+            { echo "ERROR: frontend image not found for SHA ${IMAGE_SHA}"; exit 1; }
+          echo "✓ Both images confirmed in registry for SHA ${IMAGE_SHA}"
+        env:
+          DOCKER_CONFIG: /tmp/.docker
+
+      # ------------------------------------------------------------------ #
+      # 4. Local Kustomize validation                                        #
+      # ------------------------------------------------------------------ #
+      - name: Kustomize render validation
+        run: |
+          kubectl kustomize openshift/overlays/production > /tmp/rendered.yaml
+          echo "✓ Kustomize production overlay renders cleanly"
+          grep -c "kind:" /tmp/rendered.yaml | xargs echo "Resources rendered:"
+
+      # ------------------------------------------------------------------ #
+      # 5. Apply foundation (namespace, RBAC, ConfigMap, Services, etc.)    #
+      # These are idempotent — safe to apply on every deploy.               #
+      # ------------------------------------------------------------------ #
+      - name: Apply foundation manifests
+        run: |
+          # Apply each foundational resource explicitly (not Deployments yet).
+          kubectl apply -f openshift/base/namespace.yaml -n "${OCP_NS}"
+          kubectl apply -f openshift/base/serviceaccounts.yaml -n "${OCP_NS}"
+          kubectl apply -f openshift/base/rbac.yaml -n "${OCP_NS}"
+          kubectl apply -f openshift/base/configmap.yaml -n "${OCP_NS}"
+          kubectl apply -f openshift/base/networkpolicies.yaml -n "${OCP_NS}"
+          kubectl apply -f openshift/base/services.yaml -n "${OCP_NS}"
+          echo "✓ Foundation manifests applied"
+
+      # ------------------------------------------------------------------ #
+      # 6. Run database migration Job                                        #
+      # ------------------------------------------------------------------ #
+      - name: Delete previous migration Job (if exists)
+        run: |
+          # Jobs cannot be updated in-place — delete and re-create.
+          kubectl delete job db-migrate -n "${OCP_NS}" --ignore-not-found=true
+          echo "✓ Previous db-migrate Job removed (if any)"
+
+      - name: Apply migration Job with new image
+        run: |
+          # Use kustomize to render, then patch the image inline via kubectl.
+          kubectl apply -f openshift/base/jobs/db-migrate.yaml -n "${OCP_NS}"
+          kubectl set image job/db-migrate \
+            db-migrate="${BACKEND_IMAGE}:${IMAGE_SHA}" \
+            -n "${OCP_NS}"
+          echo "✓ Migration Job applied with image ${BACKEND_IMAGE}:${IMAGE_SHA}"
+
+      - name: Wait for migration Job to complete
+        run: |
+          echo "Waiting for db-migrate Job to complete (timeout: 180s)..."
+          if ! kubectl wait job/db-migrate \
+                --for=condition=complete \
+                --timeout=180s \
+                -n "${OCP_NS}"; then
+            echo "ERROR: Migration Job failed or timed out"
+            echo "--- Migration Job logs ---"
+            kubectl logs job/db-migrate -n "${OCP_NS}" || true
+            echo "--------------------------"
+            echo "DEPLOYMENT HALTED: workloads will not be updated."
+            exit 1
+          fi
+          echo "✓ Database migration completed successfully"
+
+      # ------------------------------------------------------------------ #
+      # 7. Deploy workloads with new image SHA                              #
+      # ------------------------------------------------------------------ #
+      - name: Update Deployment image tags
+        run: |
+          for DEPLOY in backend outbox-relay analytics-consumer notification-consumer; do
+            kubectl set image deployment/${DEPLOY} \
+              ${DEPLOY}="${BACKEND_IMAGE}:${IMAGE_SHA}" \
+              -n "${OCP_NS}"
+            echo "✓ ${DEPLOY} → ${BACKEND_IMAGE}:${IMAGE_SHA}"
+          done
+          kubectl set image deployment/frontend \
+            frontend="${FRONTEND_IMAGE}:${IMAGE_SHA}" \
+            -n "${OCP_NS}"
+          echo "✓ frontend → ${FRONTEND_IMAGE}:${IMAGE_SHA}"
+
+      - name: Apply Route (idempotent)
+        run: |
+          kubectl apply -f openshift/base/routes/frontend-route.yaml -n "${OCP_NS}"
+          echo "✓ Route applied"
+
+      # ------------------------------------------------------------------ #
+      # 8. Wait for rollouts to complete                                     #
+      # ------------------------------------------------------------------ #
+      - name: Wait — backend rollout
+        run: |
+          kubectl rollout status deployment/backend \
+            --timeout=300s -n "${OCP_NS}"
+          echo "✓ backend rollout complete"
+
+      - name: Wait — frontend rollout
+        run: |
+          kubectl rollout status deployment/frontend \
+            --timeout=300s -n "${OCP_NS}"
+          echo "✓ frontend rollout complete"
+
+      - name: Wait — outbox-relay rollout
+        run: |
+          kubectl rollout status deployment/outbox-relay \
+            --timeout=300s -n "${OCP_NS}"
+          echo "✓ outbox-relay rollout complete"
+
+      - name: Wait — analytics-consumer rollout
+        run: |
+          kubectl rollout status deployment/analytics-consumer \
+            --timeout=300s -n "${OCP_NS}"
+          echo "✓ analytics-consumer rollout complete"
+
+      - name: Wait — notification-consumer rollout
+        run: |
+          kubectl rollout status deployment/notification-consumer \
+            --timeout=300s -n "${OCP_NS}"
+          echo "✓ notification-consumer rollout complete"
+
+      # ------------------------------------------------------------------ #
+      # 9. Smoke tests                                                       #
+      # ------------------------------------------------------------------ #
+      - name: Smoke test — /api/health (via cluster-internal port-forward)
+        if: ${{ github.event.inputs.skip_smoke != 'true' }}
+        run: |
+          # Port-forward backend-svc to runner localhost; test health endpoint.
+          kubectl port-forward svc/backend-svc 15001:5000 \
+            -n "${OCP_NS}" &
+          PF_PID=$!
+          sleep 3
+          HEALTH=$(curl -sf http://localhost:15001/api/health)
+          echo "Health response: ${HEALTH}"
+          kill $PF_PID || true
+          echo "${HEALTH}" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          assert d['status'] == 'success', f'Expected success, got: {d}'
+          assert d['data']['database'] == 'ok', f'DB not ok: {d}'
+          print('✓ /api/health returned success + database=ok')
+          "
+
+      - name: Smoke test — frontend / (via port-forward)
+        if: ${{ github.event.inputs.skip_smoke != 'true' }}
+        run: |
+          kubectl port-forward svc/frontend-svc 15002:8080 \
+            -n "${OCP_NS}" &
+          PF_PID=$!
+          sleep 3
+          STATUS=$(curl -so /dev/null -w "%{http_code}" http://localhost:15002/)
+          kill $PF_PID || true
+          echo "Frontend / HTTP status: ${STATUS}"
+          [ "${STATUS}" = "200" ] || { echo "ERROR: expected 200, got ${STATUS}"; exit 1; }
+          echo "✓ frontend / returned 200"
+
+      - name: Smoke test — public HTTPS Route (if Route is live)
+        if: ${{ github.event.inputs.skip_smoke != 'true' }}
+        run: |
+          # Get the Route hostname from the cluster.
+          ROUTE_HOST=$(kubectl get route frontend \
+            -n "${OCP_NS}" \
+            -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          if [ -z "${ROUTE_HOST}" ] || \
+             echo "${ROUTE_HOST}" | grep -q "CLUSTER_DOMAIN"; then
+            echo "BLOCKED: Route hostname is not set or is still a placeholder."
+            echo "Skipping public HTTPS smoke test."
+          else
+            echo "Testing https://${ROUTE_HOST}/"
+            STATUS=$(curl -so /dev/null -w "%{http_code}" \
+              --max-time 10 "https://${ROUTE_HOST}/" || echo "FAIL")
+            echo "HTTPS status: ${STATUS}"
+            [ "${STATUS}" = "200" ] || \
+              echo "WARNING: HTTPS returned ${STATUS} (Route may need DNS propagation)"
+            STATUS_API=$(curl -so /dev/null -w "%{http_code}" \
+              --max-time 10 "https://${ROUTE_HOST}/api/health" || echo "FAIL")
+            echo "HTTPS /api/health status: ${STATUS_API}"
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 10. Deployment summary                                               #
+      # ------------------------------------------------------------------ #
+      - name: Write deployment summary
+        if: always()
+        run: |
+          echo "## Production Deployment Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit SHA | \`${IMAGE_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Backend image | \`${BACKEND_IMAGE}:${IMAGE_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Frontend image | \`${FRONTEND_IMAGE}:${IMAGE_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Namespace | \`${OCP_NS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Workflow run | ${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deployed by | ${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reason | ${{ github.event.inputs.reason }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Rollback" >> "$GITHUB_STEP_SUMMARY"
+          echo '```bash' >> "$GITHUB_STEP_SUMMARY"
+          echo "# Roll back all Deployments to previous ReplicaSet:" >> "$GITHUB_STEP_SUMMARY"
+          echo "kubectl rollout undo deployment/backend -n ${OCP_NS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kubectl rollout undo deployment/frontend -n ${OCP_NS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kubectl rollout undo deployment/outbox-relay -n ${OCP_NS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kubectl rollout undo deployment/analytics-consumer -n ${OCP_NS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kubectl rollout undo deployment/notification-consumer -n ${OCP_NS}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ⚠️  Database migrations cannot be automatically rolled back." >> "$GITHUB_STEP_SUMMARY"
+          echo "> See [docs/cicd-architecture.md](docs/cicd-architecture.md) §Rollback Strategy." >> "$GITHUB_STEP_SUMMARY"

@@ -59,6 +59,12 @@ metadata:
     description: "nginx-unprivileged frontend for ArtistHub"
 spec:
   replicas: 2
+  # maxUnavailable=0 ensures the public-facing SPA is never fully down.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/component: frontend

@@ -1,0 +1,200 @@
+# openshift/base/rbac-cicd.yaml
+#
+# ArtistHub CI/CD deployment RBAC
+#
+# Phase 8G — least-privilege ServiceAccount for GitHub Actions deployment.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Purpose
+# ─────────────────────────────────────────────────────────────────────────
+# The GitHub Actions deploy-production.yml workflow authenticates to
+# OpenShift using a token for the `sa-cicd-deploy` ServiceAccount.
+# This ServiceAccount is granted ONLY the permissions required for:
+#   - Updating Deployment image references (kubectl set image)
+#   - Deleting/creating the db-migrate Job
+#   - Waiting for Job completion and Deployment rollout status
+#   - Applying ConfigMap, Services, NetworkPolicies, Routes (idempotent apply)
+#   - Reading Pod logs (for migration Job failure diagnosis)
+#   - Port-forwarding Services for smoke tests
+#
+# NOT granted:
+#   - cluster-admin
+#   - get/list/watch/create/update/delete Secrets
+#     (the pipeline does not need application secrets — they are already in
+#      the cluster from the manual secret injection step)
+#   - access to other namespaces
+#   - anyuid or privileged SCC
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Creating the token for GitHub Actions (manual, once per cluster):
+# ─────────────────────────────────────────────────────────────────────────
+#   # Apply this manifest first:
+#   kubectl apply -f openshift/base/rbac-cicd.yaml -n artisthub
+#
+#   # Create a long-lived token secret (OCP 4.11+ prefers bound tokens;
+#   # use a ServiceAccountToken secret for CI/CD where long-lived tokens
+#   # are acceptable and rotation is managed manually):
+#   kubectl create secret generic sa-cicd-deploy-token \
+#     --type=kubernetes.io/service-account-token \
+#     --annotation=kubernetes.io/service-account.name=sa-cicd-deploy \
+#     -n artisthub
+#
+#   # Extract the token value (add to GitHub → Environments → production →
+#   # Secrets → OPENSHIFT_TOKEN):
+#   kubectl get secret sa-cicd-deploy-token \
+#     -n artisthub \
+#     -o jsonpath='{.data.token}' | base64 -d
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Token rotation:
+# ─────────────────────────────────────────────────────────────────────────
+#   Delete and recreate the secret to rotate the token:
+#   kubectl delete secret sa-cicd-deploy-token -n artisthub
+#   kubectl create secret generic sa-cicd-deploy-token \
+#     --type=kubernetes.io/service-account-token \
+#     --annotation=kubernetes.io/service-account.name=sa-cicd-deploy \
+#     -n artisthub
+#   Update OPENSHIFT_TOKEN in GitHub Environment secrets with the new value.
+#   Recommended rotation: every 90 days or on personnel change.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Privilege justification (each verb):
+# ─────────────────────────────────────────────────────────────────────────
+#   deployments: get/list/patch/update  — kubectl set image, rollout status
+#   deployments/status: get             — kubectl rollout status reads this
+#   pods: get/list                      — rollout status, port-forward
+#   pods/log: get                       — migration failure diagnosis
+#   pods/portforward: create            — smoke test port-forward
+#   jobs: get/list/create/delete        — db-migrate Job management
+#   jobs/status: get                    — kubectl wait --for=condition=complete
+#   configmaps: get/list/create/update/patch  — foundation apply (idempotent)
+#   services: get/list/create/update/patch    — foundation apply
+#   networkpolicies: get/list/create/update/patch  — foundation apply
+#   serviceaccounts: get/list           — read only (SA existence check)
+#   roles/rolebindings: get/list        — read only (RBAC existence check)
+#   routes.route.openshift.io: get/list/create/update/patch  — Route apply
+#   endpoints: get/list                 — used by rollout status
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sa-cicd-deploy
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: cicd
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Least-privilege ServiceAccount for GitHub Actions CI/CD deployment.
+      Used by deploy-production.yml workflow only.
+      Grants deployment, job, and pod-inspection rights in the artisthub
+      namespace. Does NOT have access to application Secrets.
+# Note: automountServiceAccountToken is NOT set to false here because
+# this SA is used by GitHub Actions (external) not by in-cluster pods.
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: artisthub-cicd-deploy
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: cicd
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    description: >
+      Minimum RBAC role for the GitHub Actions deployment pipeline.
+      Allows Deployment updates, Job management, Pod inspection, and
+      idempotent apply of ConfigMap/Service/NetworkPolicy/Route.
+      Does NOT grant access to application Secrets.
+rules:
+  # Deployment management (kubectl set image, rollout status)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+
+  # Pod inspection and port-forward (smoke tests, log read)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+
+  # Job management (db-migrate: delete old, create new, wait)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+
+  # ConfigMap — idempotent apply of artisthub-config
+  # (NOT artisthub-secrets — the pipeline never reads application secrets)
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch"]
+    resourceNames: ["artisthub-config"]
+
+  # Services — idempotent apply
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update", "patch"]
+
+  # Endpoints — read-only (used by rollout status)
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]
+
+  # NetworkPolicies — idempotent apply
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch"]
+
+  # Namespace — read only (existence check at deploy start)
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+
+  # ServiceAccounts and RBAC — read only (existence check)
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list"]
+
+  # OpenShift Routes — get/list/create/update/patch
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artisthub-cicd-deploy
+  namespace: artisthub
+  labels:
+    app.kubernetes.io/component: cicd
+    app.kubernetes.io/part-of: artisthub-platform
+    app.kubernetes.io/managed-by: kustomize
+subjects:
+  - kind: ServiceAccount
+    name: sa-cicd-deploy
+    namespace: artisthub
+roleRef:
+  kind: Role
+  name: artisthub-cicd-deploy
+  apiGroup: rbac.authorization.k8s.io

@@ -1,12 +1,20 @@
 # .github/workflows/ci.yml
 #
-# ArtistHub CI — runs on every push and pull request to `main`.
+# ArtistHub quality gate — runs on every push and pull request to `main`.
+#
+# Phase 8G: expanded from lint+test to a full quality gate with
+#   dedicated jobs and a PostgreSQL service container.
 #
 # Jobs:
-#   lint     flake8 on the entire app/ package (PEP 8, max line length 79)
-#   test     pytest with coverage report; fails if coverage < 80%
+#   lint           flake8 on app/, consumers/, run*.py, tests/
+#   test-sqlite    pytest against in-memory SQLite (fast, always runs)
+#   test-postgres  pytest against a real PostgreSQL service container
+#                  includes relay concurrency tests
+#   schema-check   Avro schema structural validation (no live SR needed)
 #
-# Both jobs run in parallel after the shared `setup` step installs deps.
+# PRs: all four jobs run; no deployment is triggered.
+# Deployment is handled by release.yml (push to main) and
+# deploy-production.yml (manual/Environment approval).
 
 name: CI
 
@@ -18,16 +26,17 @@ on:
 
 jobs:
 
+  # ──────────────────────────────────────────────────────────────────────
+  # 1. Lint
+  # ──────────────────────────────────────────────────────────────────────
   lint:
     name: Lint (flake8)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -35,23 +44,30 @@ jobs:
         run: |
           cd backend
           pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements-dev.txt
 
       - name: Run flake8
+        # Note: tests/ has pre-existing style issues in legacy test files.
+        # Linting is scoped to application code only (same as original CI).
+        # New test files (test_outbox_relay_concurrency.py) are individually
+        # clean and satisfy these rules.
         run: |
           cd backend
-          flake8 app
+          flake8 app consumers run.py run_relay.py \
+                 run_analytics_consumer.py run_notification_consumer.py \
+                 tests/test_outbox_relay_concurrency.py
 
-  test:
-    name: Test (pytest + coverage)
+  # ──────────────────────────────────────────────────────────────────────
+  # 2. SQLite test suite (fast, no external services)
+  # ──────────────────────────────────────────────────────────────────────
+  test-sqlite:
+    name: Test — SQLite (pytest + coverage)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -59,9 +75,85 @@ jobs:
         run: |
           cd backend
           pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements-dev.txt
 
-      - name: Run pytest with coverage
+      - name: Run pytest (SQLite)
         run: |
           cd backend
-          pytest --cov=app --cov-report=term-missing --cov-fail-under=80 -v
+          pytest --cov=app --cov-report=term-missing \
+                 --cov-fail-under=80 -q
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 3. PostgreSQL integration tests (real DB, includes SKIP LOCKED suite)
+  # ──────────────────────────────────────────────────────────────────────
+  test-postgres:
+    name: Test — PostgreSQL integration
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: artisthub
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: artisthub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run migrations on test DB
+        env:
+          DATABASE_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          SECRET_KEY: ci-test-secret-key-not-for-prod
+          FLASK_APP: run:app
+          FLASK_ENV: production
+        run: |
+          cd backend
+          flask db upgrade
+
+      - name: Run PostgreSQL integration + concurrency tests
+        env:
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          SECRET_KEY: ci-test-secret-key-not-for-prod
+        run: |
+          cd backend
+          pytest tests/test_postgres_integration.py \
+                 tests/test_outbox_relay_concurrency.py \
+                 -v --tb=short
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 4. Avro schema structural validation
+  # ──────────────────────────────────────────────────────────────────────
+  schema-check:
+    name: Schema validation (Avro)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install fastavro
+        run: pip install fastavro==1.12.2
+
+      - name: Validate Avro schemas
+        run: python kafka/validate_schemas.py

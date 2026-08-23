@@ -80,6 +80,14 @@ metadata:
       Phase 8E: 2 replicas. Scale to 6 in Phase 8I via KEDA.
 spec:
   replicas: 2
+  # Same rolling strategy as analytics-consumer.  ProcessedEvent
+  # deduplication + Notification UNIQUE(event_id, fan_id) constraint
+  # make the rebalance period during rolling update safe.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/component: notification-consumer

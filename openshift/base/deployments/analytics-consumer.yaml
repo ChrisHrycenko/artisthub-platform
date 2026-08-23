@@ -85,6 +85,16 @@ metadata:
       Phase 8E: 2 replicas. Scale to 6+ in Phase 8I via KEDA.
 spec:
   replicas: 2
+  # Rolling update for Kafka consumers:
+  # maxSurge=1: new consumer pod joins the group (triggers rebalance) before
+  # old one is terminated.  Manual offset commits + ProcessedEvent
+  # deduplication make the brief period with 3 consumers safe.
+  # maxUnavailable=1: one old pod can stop before a new one is ready.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/component: analytics-consumer
