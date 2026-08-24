@@ -920,3 +920,232 @@ class TestAiEventFactory:
         assert payload["payload"]["sources_count"] == 3
         assert payload["payload"]["latency_ms"] == 800
         assert payload["payload"]["prompt_template_version"] == "9a-v1"
+
+
+# ------------------------------------------------------------------ #
+# Mock-vs-live separation tests (Phase 9A hardening)                   #
+# ------------------------------------------------------------------ #
+
+class TestMockLiveSeparation:
+    """
+    Tests confirming mock mode cannot silently activate in production
+    and that the production safeguard works correctly.
+    """
+
+    def test_production_config_rejects_watsonx_mock_true(self, monkeypatch):
+        """
+        ProductionConfig.__init__ must raise RuntimeError when
+        WATSONX_MOCK=true so production never silently returns stub answers.
+
+        ProductionConfig.SECRET_KEY is a class-level attribute evaluated at
+        import time from os.environ.  We patch the instance attribute and
+        the WATSONX_MOCK env var to test the guard in isolation.
+        """
+        monkeypatch.setenv("WATSONX_MOCK", "true")
+        from app.config import ProductionConfig
+        # Bypass the SECRET_KEY guard by patching SECRET_KEY on the class
+        # so the WATSONX_MOCK guard is reached.
+        original = ProductionConfig.SECRET_KEY
+        try:
+            ProductionConfig.SECRET_KEY = "a-valid-production-secret-key-xyz"
+            with pytest.raises(RuntimeError, match="WATSONX_MOCK"):
+                ProductionConfig()
+        finally:
+            ProductionConfig.SECRET_KEY = original
+
+    def test_production_config_allows_watsonx_mock_false(self, monkeypatch):
+        """ProductionConfig must start normally when WATSONX_MOCK=false."""
+        monkeypatch.setenv("WATSONX_MOCK", "false")
+        from app.config import ProductionConfig
+        original = ProductionConfig.SECRET_KEY
+        try:
+            ProductionConfig.SECRET_KEY = "a-valid-production-secret-key-xyz"
+            cfg = ProductionConfig()  # must not raise
+            assert cfg is not None
+        finally:
+            ProductionConfig.SECRET_KEY = original
+
+    def test_production_config_allows_watsonx_mock_absent(self, monkeypatch):
+        """ProductionConfig must start normally when WATSONX_MOCK is unset."""
+        monkeypatch.delenv("WATSONX_MOCK", raising=False)
+        from app.config import ProductionConfig
+        original = ProductionConfig.SECRET_KEY
+        try:
+            ProductionConfig.SECRET_KEY = "a-valid-production-secret-key-xyz"
+            cfg = ProductionConfig()  # must not raise
+            assert cfg is not None
+        finally:
+            ProductionConfig.SECRET_KEY = original
+
+    def test_testing_config_allows_watsonx_mock_true(self, monkeypatch):
+        """TestingConfig must NOT check WATSONX_MOCK — only ProductionConfig does."""
+        monkeypatch.setenv("WATSONX_MOCK", "true")
+        from app.config import TestingConfig
+        cfg = TestingConfig()  # must not raise
+        assert cfg is not None
+
+    def test_watsonx_client_mock_true_does_not_call_ibm(self, monkeypatch):
+        """When WATSONX_MOCK=true, WatsonxClient.generate() must never make HTTP calls."""
+        import app.services.watsonx_client as wx_mod
+        monkeypatch.setenv("WATSONX_MOCK", "true")
+        monkeypatch.delenv("WATSONX_API_KEY", raising=False)
+        wx_mod.reset_client()
+        client = wx_mod.WatsonxClient()
+        with patch("app.services.watsonx_client._requests") as mock_req:
+            result = client.generate("Test prompt")
+            mock_req.post.assert_not_called()
+        assert result.stop_reason == "mock"
+        wx_mod.reset_client()
+
+
+# ------------------------------------------------------------------ #
+# Security / privacy tests (Phase 9A hardening)                        #
+# ------------------------------------------------------------------ #
+
+class TestAiPrivacySecurity:
+    """
+    Tests confirming /api/ai/ask cannot access private creator data
+    and that question text is not leaked into logs, metrics, or events.
+    """
+
+    def test_question_text_not_in_outbox_payload(self, client, db_):
+        """Full question text must not appear in the Outbox event payload."""
+        sentinel = "SENTINELPRIVATEWORD12345"
+        question = f"What is ASCAP? {sentinel}"
+
+        result = MagicMock(spec=GenerationResult)
+        result.generated_text = "ASCAP is a performing rights organisation."
+        result.stop_reason = "eos_token"
+        result.model_id = "mock/test"
+        with patch("app.routes.ai.get_watsonx_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.generate.return_value = result
+            mock_get.return_value = mock_client
+            client.post("/api/ai/ask", json={"question": question})
+
+        import json
+        rows = db_.session.query(OutboxEvent).filter(
+            OutboxEvent.event_type.in_(
+                ["ai.question.received", "ai.answer.generated"]
+            )
+        ).all()
+        for row in rows:
+            assert sentinel not in row.payload, (
+                f"Event {row.event_type} payload contains raw question text"
+            )
+
+    def test_question_length_not_question_text_in_event(self, client, db_):
+        """ai.question.received must store only integer length, not text."""
+        import json
+        result = MagicMock(spec=GenerationResult)
+        result.generated_text = "Answer about PROs."
+        result.stop_reason = "eos_token"
+        result.model_id = "mock/test"
+        with patch("app.routes.ai.get_watsonx_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.generate.return_value = result
+            mock_get.return_value = mock_client
+            client.post(
+                "/api/ai/ask",
+                json={"question": "What is ASCAP?"},
+            )
+
+        row = (
+            db_.session.query(OutboxEvent)
+            .filter_by(event_type="ai.question.received")
+            .first()
+        )
+        assert row is not None
+        payload = json.loads(row.payload)
+        data = payload["payload"]
+        # Must be integer, not string question content
+        assert isinstance(data["question_length"], int)
+        assert data["question_length"] == len("What is ASCAP?")
+
+    def test_no_private_document_models_exist_in_rag(self):
+        """
+        The rag_retrieval module must not import or query ORM models.
+        Note: the docstring mentions 'Artist' as an example — we check
+        for import statements and query calls, not word presence.
+        """
+        import inspect
+        import app.services.rag_retrieval as rag_mod
+        source = inspect.getsource(rag_mod)
+        # These patterns would indicate ORM access — docstring mentions are OK.
+        forbidden_patterns = [
+            "from app.models",
+            "from app.extensions",
+            "Artist.query", "Fan.query",
+            "db.session",
+        ]
+        for pattern in forbidden_patterns:
+            assert pattern not in source, (
+                f"rag_retrieval.py contains forbidden ORM pattern: {pattern!r}"
+            )
+
+    def test_no_private_document_models_in_knowledge_corpus(self):
+        """
+        knowledge_corpus.py must have no reference to database models
+        — it is a pure data module.
+        """
+        import inspect
+        import app.services.knowledge_corpus as corpus_mod
+        source = inspect.getsource(corpus_mod)
+        db_imports = ["from app.models", "from app.extensions"]
+        for imp in db_imports:
+            assert imp not in source, (
+                f"knowledge_corpus.py contains DB import: {imp}"
+            )
+
+    def test_retrieve_function_signature_has_no_creator_id(self):
+        """
+        retrieve() must not accept creator_id — architectural privacy boundary.
+        """
+        import inspect
+        from app.services.rag_retrieval import retrieve
+        params = inspect.signature(retrieve).parameters
+        assert "creator_id" not in params
+
+    def test_ai_route_has_no_orm_reads_of_private_tables(self):
+        """
+        The ai.py route must not import or query Artist, Fan, MusicRelease,
+        SocialPost, MerchProduct, or Follow for answering purposes.
+        (session_type helper may reference Artist for type checking only.)
+        """
+        import inspect
+        import app.routes.ai as ai_mod
+        source = inspect.getsource(ai_mod)
+        # These ORM queries must not appear in the route
+        forbidden = [
+            "Artist.query", "Fan.query",
+            "MusicRelease.query", "SocialPost.query",
+            "MerchProduct.query", "Follow.query",
+            "db.session.query(Artist",
+            "db.session.query(Fan",
+            "db.session.query(MusicRelease",
+        ]
+        for pattern in forbidden:
+            assert pattern not in source, (
+                f"ai.py contains forbidden query pattern: {pattern}"
+            )
+
+    def test_response_answer_is_string_not_raw_db_data(self, client, db_):
+        """The answer field in the response must be a plain string."""
+        result = MagicMock(spec=GenerationResult)
+        result.generated_text = "Mechanical royalties are..."
+        result.stop_reason = "eos_token"
+        result.model_id = "mock/test"
+        with patch("app.routes.ai.get_watsonx_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.generate.return_value = result
+            mock_get.return_value = mock_client
+            r = client.post(
+                "/api/ai/ask",
+                json={"question": "How do mechanical royalties work?"},
+            )
+        data = r.get_json()["data"]
+        assert isinstance(data["answer"], str)
+        # Must not contain any SQLAlchemy model repr or internal data
+        assert "<Artist" not in data["answer"]
+        assert "<Fan" not in data["answer"]
+        assert "password" not in data["answer"].lower()

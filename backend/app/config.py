@@ -115,12 +115,24 @@ class ProductionConfig(BaseConfig):
     SQLALCHEMY_POOL_PRE_PING: bool = True
 
     def __init__(self) -> None:
-        """Enforce that a real secret key is set in production."""
+        """Enforce that real secrets are configured in production.
+
+        Raises RuntimeError if:
+        - SECRET_KEY is the insecure development default.
+        - WATSONX_MOCK is set to 'true', which would cause the application
+          to return stub AI responses to real users without any notice.
+        """
         default = "dev-secret-key-change-in-production"
         if self.SECRET_KEY == default:
             raise RuntimeError(
                 "SECRET_KEY environment variable must be set in production."
                 " Never use the default development key."
+            )
+        if os.environ.get("WATSONX_MOCK", "false").lower() == "true":
+            raise RuntimeError(
+                "WATSONX_MOCK=true is not permitted in production. "
+                "Set WATSONX_MOCK=false (or remove it) and provide a valid "
+                "WATSONX_API_KEY to enable real AI responses."
             )
 
 
