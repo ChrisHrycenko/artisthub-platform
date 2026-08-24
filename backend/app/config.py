@@ -136,6 +136,34 @@ class ProductionConfig(BaseConfig):
             )
 
 
+class DockerDevelopmentConfig(DevelopmentConfig):
+    """
+    Configuration for the local Docker Compose development stack.
+
+    Identical to DevelopmentConfig but validates that SECRET_KEY is
+    not the insecure default placeholder, matching the requirement from
+    docker-compose.yml that a real SECRET_KEY is provided in .env.
+
+    WATSONX_MOCK is intentionally NOT blocked here — local Docker stacks
+    are developer environments, not customer-facing production deployments.
+    Set WATSONX_MOCK=true in .env to run without IBM credentials, or
+    WATSONX_MOCK=false with a real WATSONX_API_KEY for live AI responses.
+
+    Selected by: FLASK_ENV=docker (set in docker-compose.yml environment block).
+    """
+
+    def __init__(self) -> None:
+        """Enforce that a real SECRET_KEY is provided."""
+        default = "dev-secret-key-change-in-production"
+        if self.SECRET_KEY == default:
+            raise RuntimeError(
+                "SECRET_KEY environment variable must be set when running "
+                "the Docker Compose stack. "
+                "Generate one with: "
+                "python3 -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+
+
 class PostgresTestingConfig(TestingConfig):
     """
     PostgreSQL integration test settings.
@@ -165,6 +193,7 @@ class PostgresTestingConfig(TestingConfig):
 # Map string names to config classes so create_app() can select by name.
 config_map = {
     "development": DevelopmentConfig,
+    "docker": DockerDevelopmentConfig,
     "testing": TestingConfig,
     "pg_testing": PostgresTestingConfig,
     "production": ProductionConfig,

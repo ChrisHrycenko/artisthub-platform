@@ -4,12 +4,13 @@
 #
 # PREREQUISITE — create a .env file at the repo root before starting:
 #   cp .env.example .env
-#   # then set a real SECRET_KEY in .env:
+#   # Set a real SECRET_KEY in .env:
 #   python3 -c "import secrets; print(secrets.token_hex(32))"
+#   # For AI without IBM credentials (local dev), keep WATSONX_MOCK=true in .env.
+#   # For live watsonx.ai responses, set WATSONX_MOCK=false and add WATSONX_API_KEY.
 #
-# The .env file is MANDATORY. ProductionConfig (selected below via
-# FLASK_ENV=production) will raise a RuntimeError at startup if SECRET_KEY
-# is missing or still set to the insecure default placeholder.
+# The .env file is MANDATORY. DockerDevelopmentConfig (FLASK_ENV=docker) will
+# raise a RuntimeError at startup if SECRET_KEY is missing or still the default.
 #
 # Usage:
 #   docker-compose -f docker/docker-compose.yml up --build
@@ -44,10 +45,10 @@ services:
       - ../.env                 # Provides SECRET_KEY (required) and DATABASE_URL
     environment:
       # NOTE: `environment` keys take precedence over `env_file` values for
-      # the same key. FLASK_ENV=production is deliberately enforced here so
-      # that the Compose stack always runs ProductionConfig regardless of what
-      # is set in .env. Do not remove this override.
-      FLASK_ENV: production
+      # the same key. FLASK_ENV=docker selects DockerDevelopmentConfig, which
+      # validates SECRET_KEY but permits WATSONX_MOCK for local dev.
+      # Do not change to "production" — ProductionConfig blocks WATSONX_MOCK=true.
+      FLASK_ENV: docker
     volumes:
       # Persist the SQLite database file across restarts.
       - db-data:/app/instance
