@@ -1,0 +1,62 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "AiQuestionReceived",
+  "doc": "Emitted when a creator submits a question to ArtistHub AI. Source: POST /api/ai/ask (ai.py after request validation). Topic: artisthub.ai. Message key: correlation_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'ai.question.received'.",
+      "default": "ai.question.received"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the request."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "AiQuestionReceivedPayload",
+        "doc": "Business data for the ai.question.received event.",
+        "fields": [
+          {
+            "name": "question_length",
+            "type": "int",
+            "doc": "Character length of the question (not the question text itself — PII-safe)."
+          },
+          {
+            "name": "session_type",
+            "type": "string",
+            "doc": "Type of authenticated session: 'artist', 'fan', or 'anonymous'."
+          }
+        ]
+      }
+    }
+  ]
+}

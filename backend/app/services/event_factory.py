@@ -39,6 +39,7 @@ from app.models.outbox import OutboxEvent
 TOPIC_SOCIAL = "artisthub.social"
 TOPIC_CATALOG = "artisthub.catalog"
 TOPIC_IDENTITY = "artisthub.identity"
+TOPIC_AI = "artisthub.ai"
 
 # ------------------------------------------------------------------ #
 # Internal helpers                                                      #
@@ -521,6 +522,90 @@ def build_artist_profile_updated(
             "genre": artist.genre,
             "location": artist.location,
             "profile_image_url": artist.profile_image_url,
+        },
+        correlation_id=correlation_id,
+    )
+
+
+# ------------------------------------------------------------------ #
+# AI — Phase 9A                                                         #
+# ------------------------------------------------------------------ #
+
+def build_ai_question_received(
+    question_length: int,
+    session_type: str,
+    correlation_id: Optional[str] = None,
+) -> OutboxEvent:
+    """
+    Build an outbox row for the ``ai.question.received`` event.
+
+    Source: POST /api/ai/ask after request validation.
+    Topic:  artisthub.ai
+    Key:    correlation_id (question is not a domain entity with an ID)
+
+    Privacy note: the question TEXT is intentionally NOT included in
+    the event payload.  Only the character length and session type are
+    recorded — this is sufficient for observability and governance without
+    storing potentially sensitive question content in the outbox.
+
+    Payload fields match AiQuestionReceivedPayload in
+    kafka/schemas/ai/ai_question_received.avsc.
+    """
+    return _outbox(
+        event_type="ai.question.received",
+        event_version="1",
+        topic=TOPIC_AI,
+        message_key=correlation_id or _uuid(),
+        payload_dict={
+            "question_length": question_length,
+            "session_type": session_type,
+        },
+        correlation_id=correlation_id,
+    )
+
+
+def build_ai_answer_generated(
+    grounding_status: str,
+    sources_count: int,
+    model_id: str,
+    latency_ms: int,
+    requires_professional_review: bool,
+    prompt_template_version: str = "9a-v1",
+    correlation_id: Optional[str] = None,
+) -> OutboxEvent:
+    """
+    Build an outbox row for the ``ai.answer.generated`` event.
+
+    Source: POST /api/ai/ask after generation and grounding evaluation.
+    Topic:  artisthub.ai
+    Key:    correlation_id
+
+    Args:
+        grounding_status:           'grounded' | 'insufficient_evidence' |
+                                    'upstream_error'.
+        sources_count:              Number of retrieved passages used.
+        model_id:                   watsonx.ai model ID.
+        latency_ms:                 End-to-end latency in milliseconds.
+        requires_professional_review: True when the answer contains
+                                    professional-review guidance.
+        prompt_template_version:    Version tag of the prompt template.
+        correlation_id:             Flask request trace ID.
+
+    Payload fields match AiAnswerGeneratedPayload in
+    kafka/schemas/ai/ai_answer_generated.avsc.
+    """
+    return _outbox(
+        event_type="ai.answer.generated",
+        event_version="1",
+        topic=TOPIC_AI,
+        message_key=correlation_id or _uuid(),
+        payload_dict={
+            "grounding_status": grounding_status,
+            "sources_count": sources_count,
+            "model_id": model_id,
+            "latency_ms": latency_ms,
+            "requires_professional_review": requires_professional_review,
+            "prompt_template_version": prompt_template_version,
         },
         correlation_id=correlation_id,
     )

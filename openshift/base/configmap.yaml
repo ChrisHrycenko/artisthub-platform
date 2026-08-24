@@ -94,3 +94,30 @@ data:
   # ------------------------------------------------------------------ #
   # Placeholder — overridden in overlays/production/configmap-patch.yaml
   CORS_ORIGINS: "http://localhost:8080"
+
+  # ------------------------------------------------------------------ #
+  # ArtistHub AI — Phase 9A (non-secret config)                         #
+  # ------------------------------------------------------------------ #
+
+  # watsonx.ai base URL — public endpoint, not a secret.
+  WATSONX_API_URL: "https://us-south.ml.cloud.ibm.com"
+
+  # watsonx.ai foundation model ID.
+  # Default: IBM Granite 13B Instruct v2.
+  WATSONX_MODEL_ID: "ibm/granite-13b-instruct-v2"
+
+  # Maximum new tokens per generation response.
+  WATSONX_MAX_TOKENS: "512"
+
+  # Sampling temperature (0.1 = near-deterministic for factual Q&A).
+  WATSONX_TEMPERATURE: "0.1"
+
+  # HTTP request timeout to watsonx.ai in seconds.
+  WATSONX_TIMEOUT: "30"
+
+  # Maximum retry attempts on transient watsonx.ai errors.
+  WATSONX_MAX_RETRIES: "2"
+
+  # Set to "true" for local development without IBM credentials.
+  # MUST be "false" in production.
+  WATSONX_MOCK: "false"

@@ -203,6 +203,7 @@ def create_app(config_name: str | None = None) -> Flask:
     from app.routes.fans import fans_bp
     from app.routes.follows import follows_bp
     from app.routes.auth import auth_bp
+    from app.routes.ai import ai_bp
 
     flask_app.register_blueprint(health_bp, url_prefix="/api")
     flask_app.register_blueprint(artists_bp, url_prefix="/api")
@@ -212,6 +213,8 @@ def create_app(config_name: str | None = None) -> Flask:
     flask_app.register_blueprint(fans_bp, url_prefix="/api")
     flask_app.register_blueprint(follows_bp, url_prefix="/api")
     flask_app.register_blueprint(auth_bp, url_prefix="/api")
+    # Phase 9A — ArtistHub AI (read-only RAG assistant)
+    flask_app.register_blueprint(ai_bp, url_prefix="/api")
 
     # Phase 5+ will add: orders_bp
 

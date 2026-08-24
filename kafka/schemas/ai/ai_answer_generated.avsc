@@ -1,0 +1,83 @@
+{
+  "type": "record",
+  "namespace": "io.artisthub.events",
+  "name": "AiAnswerGenerated",
+  "doc": "Emitted when ArtistHub AI has generated and returned an answer. Source: POST /api/ai/ask (ai.py after generation completes). Topic: artisthub.ai. Message key: correlation_id.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "UUID v4 uniquely identifying this event instance."
+    },
+    {
+      "name": "event_type",
+      "type": "string",
+      "doc": "Always 'ai.answer.generated'.",
+      "default": "ai.answer.generated"
+    },
+    {
+      "name": "event_version",
+      "type": "string",
+      "doc": "Schema version. Current: '1'.",
+      "default": "1"
+    },
+    {
+      "name": "occurred_at",
+      "type": "string",
+      "doc": "ISO 8601 UTC datetime of the response."
+    },
+    {
+      "name": "producer",
+      "type": "string",
+      "doc": "Originating service.",
+      "default": "artisthub-api"
+    },
+    {
+      "name": "correlation_id",
+      "type": ["null", "string"],
+      "doc": "Flask request trace ID.",
+      "default": null
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "AiAnswerGeneratedPayload",
+        "doc": "Business data for the ai.answer.generated event.",
+        "fields": [
+          {
+            "name": "grounding_status",
+            "type": "string",
+            "doc": "One of: 'grounded', 'insufficient_evidence', 'upstream_error'."
+          },
+          {
+            "name": "sources_count",
+            "type": "int",
+            "doc": "Number of authoritative passages retrieved and used."
+          },
+          {
+            "name": "model_id",
+            "type": "string",
+            "doc": "watsonx.ai model ID used for generation."
+          },
+          {
+            "name": "latency_ms",
+            "type": "int",
+            "doc": "Total end-to-end latency in milliseconds."
+          },
+          {
+            "name": "requires_professional_review",
+            "type": "boolean",
+            "doc": "True if the answer contains content requiring professional review."
+          },
+          {
+            "name": "prompt_template_version",
+            "type": "string",
+            "doc": "Version identifier of the prompt template used.",
+            "default": "9a-v1"
+          }
+        ]
+      }
+    }
+  ]
+}

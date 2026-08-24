@@ -103,6 +103,9 @@ EVENT_TYPE_TO_RECORD_NAME: Dict[str, str] = {
     "artist.merch.deleted":    "ArtistMerchDeleted",
     "artist.registered":       "ArtistRegistered",
     "artist.profile.updated":  "ArtistProfileUpdated",
+    # Phase 9A — AI events
+    "ai.question.received":    "AiQuestionReceived",
+    "ai.answer.generated":     "AiAnswerGenerated",
 }
 
 #: Avro namespace shared by all 12 schemas.
@@ -145,6 +148,13 @@ _RECORD_NAME_TO_FILE: Dict[str, str] = {
     ),
     "ArtistProfileUpdated": (
         "kafka/schemas/identity/artist_profile_updated.avsc"
+    ),
+    # Phase 9A — AI events
+    "AiQuestionReceived": (
+        "kafka/schemas/ai/ai_question_received.avsc"
+    ),
+    "AiAnswerGenerated": (
+        "kafka/schemas/ai/ai_answer_generated.avsc"
     ),
 }
 

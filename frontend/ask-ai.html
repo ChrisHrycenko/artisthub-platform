@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ask ArtistHub AI — ArtistHub</title>
+  <link rel="stylesheet" href="css/reset.css" />
+  <link rel="stylesheet" href="css/main.css" />
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* Ask AI page styles                                                   */
+    /* ------------------------------------------------------------------ */
+    .ai-hero {
+      background: var(--color-surface);
+      border-bottom: 1px solid var(--color-border);
+      padding: var(--space-lg) 0;
+    }
+
+    .ai-hero h1 {
+      font-size: 1.75rem;
+      margin-bottom: var(--space-sm);
+    }
+
+    .ai-hero p {
+      color: var(--color-muted);
+      max-width: 600px;
+    }
+
+    .ai-disclaimer {
+      font-size: 0.82rem;
+      color: var(--color-muted);
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: var(--radius);
+      padding: var(--space-sm) var(--space-md);
+      margin-top: var(--space-md);
+    }
+
+    /* Ask form */
+    .ai-form-section {
+      padding: var(--space-lg) 0;
+    }
+
+    .ai-input-row {
+      display: flex;
+      gap: var(--space-sm);
+      align-items: flex-start;
+    }
+
+    #question-input {
+      flex: 1;
+      padding: 0.65rem 0.9rem;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      font-size: 1rem;
+      font-family: var(--font-family);
+      line-height: var(--line-height);
+      resize: vertical;
+      min-height: 3.5rem;
+    }
+
+    #question-input:focus {
+      outline: none;
+      border-color: var(--color-accent);
+    }
+
+    #ask-btn {
+      white-space: nowrap;
+      min-width: 8rem;
+    }
+
+    #ask-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    /* Answer panel */
+    .ai-answer-panel {
+      display: none;
+      border-top: 1px solid var(--color-border);
+      padding: var(--space-lg) 0;
+    }
+
+    .ai-answer-panel.visible {
+      display: block;
+    }
+
+    .ai-answer-header {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+      margin-bottom: var(--space-md);
+    }
+
+    .ai-badge {
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+    }
+
+    .ai-badge-grounded {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
+    .ai-badge-insufficient {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
+    .ai-badge-error {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+
+    .ai-answer-text {
+      white-space: pre-wrap;
+      line-height: 1.7;
+      margin-bottom: var(--space-md);
+    }
+
+    /* Professional review notice */
+    .ai-review-notice {
+      display: none;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: var(--radius);
+      padding: var(--space-sm) var(--space-md);
+      font-size: 0.88rem;
+      color: #1e40af;
+      margin-bottom: var(--space-md);
+    }
+
+    .ai-review-notice.visible {
+      display: block;
+    }
+
+    /* Sources */
+    .ai-sources-heading {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--color-muted);
+      margin-bottom: var(--space-sm);
+    }
+
+    .ai-sources-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
+
+    .ai-source-item {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius);
+      padding: var(--space-sm) var(--space-md);
+      font-size: 0.88rem;
+    }
+
+    .ai-source-org {
+      font-weight: 600;
+      color: var(--color-text);
+    }
+
+    .ai-source-title {
+      color: var(--color-muted);
+    }
+
+    .ai-source-url a {
+      color: var(--color-accent);
+      font-size: 0.82rem;
+      word-break: break-all;
+    }
+
+    /* Loading spinner */
+    .ai-loading {
+      display: none;
+      align-items: center;
+      gap: var(--space-sm);
+      color: var(--color-muted);
+      font-size: 0.9rem;
+      padding: var(--space-md) 0;
+    }
+
+    .ai-loading.visible {
+      display: flex;
+    }
+
+    .spinner {
+      width: 1.2rem;
+      height: 1.2rem;
+      border: 2px solid var(--color-border);
+      border-top-color: var(--color-accent);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Topic chips */
+    .ai-topics {
+      margin-top: var(--space-md);
+    }
+
+    .ai-topics p {
+      font-size: 0.85rem;
+      color: var(--color-muted);
+      margin-bottom: var(--space-sm);
+    }
+
+    .topic-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-sm);
+    }
+
+    .topic-chip {
+      font-size: 0.82rem;
+      padding: 0.25rem 0.75rem;
+      border: 1px solid var(--color-border);
+      border-radius: 999px;
+      cursor: pointer;
+      color: var(--color-muted);
+      background: var(--color-bg);
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .topic-chip:hover {
+      border-color: var(--color-accent);
+      color: var(--color-accent);
+    }
+
+    .corr-id {
+      font-size: 0.75rem;
+      color: var(--color-border);
+      margin-top: var(--space-lg);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ================================================================
+       HEADER
+  ================================================================ -->
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="logo">ArtistHub</a>
+      <nav class="site-nav" id="site-nav">
+        <a href="browse-artists.html">Artists</a>
+        <a href="browse-releases.html">Releases</a>
+        <a href="browse-posts.html">Feed</a>
+        <a href="browse-merch.html">Merch</a>
+        <a href="ask-ai.html" style="color:var(--color-accent);font-weight:600;">Ask AI</a>
+        <span id="nav-guest">
+          <a href="artist-login.html">Artist Login</a>
+          <a href="fan-login.html">Fan Login</a>
+        </span>
+        <span id="nav-authed" style="display:none;">
+          <a href="#" id="nav-dashboard">Dashboard</a>
+          <a href="#" id="nav-logout">Sign Out</a>
+        </span>
+      </nav>
+    </div>
+  </header>
+
+  <!-- ================================================================
+       HERO
+  ================================================================ -->
+  <section class="ai-hero">
+    <div class="container">
+      <h1>Ask ArtistHub AI</h1>
+      <p>
+        Get educational answers about music publishing, royalties, PROs,
+        copyright, and release preparation — all sourced from authoritative
+        industry organisations.
+      </p>
+      <div class="ai-disclaimer">
+        <strong>Educational use only.</strong>
+        ArtistHub AI is not an attorney, accountant, or financial adviser.
+        Answers are for general education and do not constitute legal, tax,
+        or financial advice. Consult a qualified professional for your
+        specific situation.
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================================
+       MAIN
+  ================================================================ -->
+  <main>
+    <section class="ai-form-section">
+      <div class="container">
+
+        <!-- Ask form -->
+        <div class="ai-input-row">
+          <textarea
+            id="question-input"
+            placeholder="e.g. How do mechanical royalties work for streaming?"
+            maxlength="1000"
+            rows="2"
+            aria-label="Your music business question"
+          ></textarea>
+          <button id="ask-btn" class="btn btn-primary" onclick="askAI()">
+            Ask
+          </button>
+        </div>
+
+        <!-- Suggested topics -->
+        <div class="ai-topics">
+          <p>Suggested topics:</p>
+          <div class="topic-chips" id="topic-chips">
+            <button class="topic-chip" onclick="fillQuestion('What is a performing rights organisation (PRO) and do I need to join one?')">What is a PRO?</button>
+            <button class="topic-chip" onclick="fillQuestion('How do mechanical royalties work for streaming?')">Mechanical royalties</button>
+            <button class="topic-chip" onclick="fillQuestion('What is the difference between master rights and composition rights?')">Master vs composition</button>
+            <button class="topic-chip" onclick="fillQuestion('What is SoundExchange and when do I need to register?')">SoundExchange</button>
+            <button class="topic-chip" onclick="fillQuestion('What is an ISRC and how do I get one for my release?')">ISRC explained</button>
+            <button class="topic-chip" onclick="fillQuestion('What is the writer share vs publisher share in royalties?')">Writer/publisher share</button>
+            <button class="topic-chip" onclick="fillQuestion('What is the DMCA and how does a takedown notice work?')">DMCA takedown</button>
+            <button class="topic-chip" onclick="fillQuestion('What should I do before distributing my first release?')">Release checklist</button>
+          </div>
+        </div>
+
+        <!-- Loading indicator -->
+        <div id="ai-loading" class="ai-loading" role="status" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <span>ArtistHub AI is thinking…</span>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Answer panel -->
+    <section id="ai-answer-panel" class="ai-answer-panel">
+      <div class="container">
+
+        <div class="ai-answer-header">
+          <strong>ArtistHub AI</strong>
+          <span id="grounding-badge" class="ai-badge" aria-live="polite"></span>
+        </div>
+
+        <!-- Professional-review notice -->
+        <div id="review-notice" class="ai-review-notice" role="note">
+          <strong>Professional review recommended.</strong>
+          This answer touches on topics that may require individualised
+          legal, tax, accounting, or financial advice. The information
+          above is educational. Please consult a qualified professional
+          for your specific situation.
+        </div>
+
+        <!-- Answer text -->
+        <div id="answer-text" class="ai-answer-text" aria-live="polite"></div>
+
+        <!-- Sources -->
+        <div id="sources-section" style="display:none;">
+          <p class="ai-sources-heading">Sources</p>
+          <ul id="sources-list" class="ai-sources-list"></ul>
+        </div>
+
+        <!-- Correlation ID (for support) -->
+        <p id="corr-id-display" class="corr-id"></p>
+
+      </div>
+    </section>
+  </main>
+
+  <!-- ================================================================
+       FOOTER
+  ================================================================ -->
+  <footer class="site-footer">
+    <div class="container">
+      <p>ArtistHub MVP &copy; 2024 — Built for independent musicians.</p>
+    </div>
+  </footer>
+
+  <script src="js/api.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/ask-ai.js"></script>
+
+</body>
+</html>

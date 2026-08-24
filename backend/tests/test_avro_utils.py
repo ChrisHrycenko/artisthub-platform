@@ -211,11 +211,18 @@ class TestSubjectNaming:
                 f"Subject mismatch for {event_type}"
             )
 
-    def test_12_event_types_registered(self):
-        """Exactly 12 event types must be in EVENT_TYPE_TO_RECORD_NAME."""
-        assert len(EVENT_TYPE_TO_RECORD_NAME) == 12
+    def test_event_types_registered(self):
+        """All known event types must be in EVENT_TYPE_TO_RECORD_NAME.
+
+        Phase 9A added 2 AI event types (ai.question.received,
+        ai.answer.generated) bringing the total from 12 to 14.
+        """
+        assert len(EVENT_TYPE_TO_RECORD_NAME) >= 14
         for et in _ALL_EVENT_TYPES:
             assert et in EVENT_TYPE_TO_RECORD_NAME
+        # Phase 9A AI event types.
+        assert "ai.question.received" in EVENT_TYPE_TO_RECORD_NAME
+        assert "ai.answer.generated" in EVENT_TYPE_TO_RECORD_NAME
 
 
 # ------------------------------------------------------------------ #
