@@ -178,7 +178,11 @@ services:
     env_file:
       - ../.env
     environment:
-      FLASK_ENV: "production"
+      # Use DockerDevelopmentConfig (FLASK_ENV=docker) so that
+      # WATSONX_MOCK=true is permitted for local dev stacks.
+      # ProductionConfig blocks WATSONX_MOCK=true, which would prevent
+      # worker startup even though workers never call watsonx.
+      FLASK_ENV: "docker"
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
       SCHEMA_REGISTRY_URL: "http://redpanda:8081"
       OUTBOX_POLL_INTERVAL: "5"
@@ -217,7 +221,7 @@ services:
     env_file:
       - ../.env
     environment:
-      FLASK_ENV: "production"
+      FLASK_ENV: "docker"
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
       SCHEMA_REGISTRY_URL: "http://redpanda:8081"
       KAFKA_CONSUMER_GROUP: "artisthub.analytics.v1"
@@ -254,7 +258,7 @@ services:
     env_file:
       - ../.env
     environment:
-      FLASK_ENV: "production"
+      FLASK_ENV: "docker"
       KAFKA_BOOTSTRAP_SERVERS: "redpanda:29092"
       SCHEMA_REGISTRY_URL: "http://redpanda:8081"
       NOTIF_CONSUMER_GROUP: "artisthub.notifications.v1"
