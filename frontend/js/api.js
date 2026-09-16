@@ -27,9 +27,10 @@
 // ------------------------------------------------------------------ //
 
 // Change this single constant to point to a different backend host.
-// In production (served through nginx), this can be an empty string
-// because /api/* is proxied to Flask on the same origin.
-const API_BASE_URL = 'http://127.0.0.1:5000/api';
+// Empty string means same-origin: the browser sends requests to /api/*
+// which nginx proxies to the Flask backend container (backend:5000).
+// Never use an absolute host here — the backend port is not exposed.
+const API_BASE_URL = '/api';
 
 // ------------------------------------------------------------------ //
 // Core fetch wrapper                                                   //
@@ -52,8 +53,7 @@ async function request(method, path, body = null) {
       'Accept':       'application/json',
     },
     // CRITICAL: must be 'include' so Flask-Login session cookies are
-    // sent cross-origin during local development (frontend on :5500,
-    // backend on :5000). Without this, current_user is always anonymous.
+    // sent on every request. Without this, current_user is always anonymous.
     credentials: 'include',
   };
 
