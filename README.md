@@ -2027,3 +2027,19 @@ At-least-once Kafka delivery means any message can arrive twice. Three independe
 ---
 
 *ArtistHub — built with Python, Flask, Kafka, Avro, and IBM Bob.*
+
+### S2-F2/F8 processed-event forward repair
+
+The `s2f2_processed_event_groups` revision requires explicit, independently
+verified consumer-pause attestation, even for empty databases. Populated legacy
+history additionally requires complete verified attribution. No group guessing,
+record deletion, automatic replay or unsafe automatic downgrade is permitted.
+Follow the [operator runbook](docs/runbooks/processed-event-schema-repair.md).
+Existing unattended migration commands intentionally fail closed at this revision
+until this procedure is followed. Release/deployment settings are unchanged.
+
+Independent migration tests: `cd backend && pytest tests/migrations -v`.
+They use the existing `ARTISTHUB_TEST_POSTGRES_URL`, require localhost and a
+`*_test` database, and create unique disposable databases using a test role with
+`CREATEDB`. They skip when the URL is absent; the dedicated CI job always provides
+it. These tests prohibit model-based schema creation/deletion.

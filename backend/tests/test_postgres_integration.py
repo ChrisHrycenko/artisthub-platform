@@ -824,7 +824,10 @@ class TestAlembicMigrations:
 
     def test_upgrade_then_downgrade(self, pg_app):
         """
-        flask db upgrade → all tables present.
+        Historical four-revision upgrade → all tables present.
+
+        The new forward-only repair is tested independently in tests/migrations;
+        it deliberately refuses automatic downgrade.
         flask db downgrade base → all managed tables removed.
         """
         from flask_migrate import upgrade as db_upgrade, downgrade as db_downgrade
@@ -840,7 +843,7 @@ class TestAlembicMigrations:
                 conn.commit()
 
             # Apply all migrations in order.
-            db_upgrade()
+            db_upgrade(revision="78e93118283f")
 
             # Verify all expected tables exist.
             inspector = _db.inspect(_db.engine)
@@ -872,5 +875,5 @@ class TestAlembicMigrations:
             assert "fan" not in tables_after_downgrade
 
             # Re-apply so pg_app teardown (drop_all) can find tables to drop.
-            db_upgrade()
+            db_upgrade(revision="78e93118283f")
             _db.create_all()  # Re-create to restore the pg_db fixture state.
