@@ -4,11 +4,13 @@ Revision ID: s2f2_processed_event_groups
 Revises: 78e93118283f
 """
 
+from contextlib import ExitStack
 import hashlib
 import json
 import logging
 import os
 import stat
+from typing import TextIO
 
 from alembic import context, op
 import sqlalchemy as sa
@@ -29,6 +31,7 @@ BASE = {
 }
 TRANSITION_INDEX = 'ix_processed_event_event_group'
 LOG = logging.getLogger('alembic.runtime.migration')
+MANIFEST_LIMIT = 10_000_000
 
 
 def reject(code: str) -> None:
@@ -140,16 +143,68 @@ def unique_object(pairs: list) -> dict:
     return result
 
 
-def attribution(path: str, binding: dict, rows: list[dict]) -> dict:
-    """Read a private regular file and require exact verified coverage."""
+def manifest_stat(handle: TextIO) -> os.stat_result:
+    """Validate the opened inode, not a separately resolved pathname."""
+    info = os.fstat(handle.fileno())
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077 or info.st_size > MANIFEST_LIMIT):
+        reject('unsafe_manifest_file')
+    return info
+
+
+def manifest_identity(info: os.stat_result) -> tuple:
+    """Detect in-place edits/permission changes without comparing read atime."""
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def open_manifest(path: str) -> TextIO:
+    """Pin a private regular inode before locking; refuse every symlink hop.
+
+    Walk directory descriptors with O_NOFOLLOW instead of checking a pathname
+    and reopening it. The same final descriptor is kept through validation.
+    """
+    directory = descriptor = handle = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor, 'r', encoding='utf-8') as handle:
-            info = os.fstat(handle.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                    or info.st_mode & 0o077 or info.st_size > 10_000_000):
-                reject('unsafe_manifest_file')
-            document = json.load(handle, object_pairs_hook=unique_object)
+        parts = [part for part in path.split(os.sep) if part not in ('', '.')]
+        if not parts or '..' in parts or path.endswith(os.sep):
+            reject('unsafe_manifest_file')
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        directory = os.open(os.sep if os.path.isabs(path) else '.', flags)
+        for part in parts[:-1]:
+            child = os.open(part, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW
+                             | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+        handle = os.fdopen(descriptor, 'r', encoding='utf-8')
+        descriptor = None  # fdopen now owns the descriptor.
+        manifest_stat(handle)
+        return handle
+    except Exception:
+        if handle is not None:
+            handle.close()
+        elif descriptor is not None:
+            os.close(descriptor)
+        reject('unsafe_manifest_file')
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def attribution(handle: TextIO, binding: dict, rows: list[dict],
+                observed: os.stat_result) -> dict:
+    """Authoritatively recheck the pinned file after locking and snapshotting."""
+    try:
+        if manifest_identity(manifest_stat(handle)) != manifest_identity(observed):
+            reject('manifest_changed')
+        # Bound bytes actually read as well as fstat size, including file growth.
+        content = handle.buffer.read(MANIFEST_LIMIT + 1)
+        if len(content) > MANIFEST_LIMIT:
+            reject('unsafe_manifest_file')
+        document = json.loads(content.decode('utf-8'), object_pairs_hook=unique_object)
+        if manifest_identity(manifest_stat(handle)) != manifest_identity(observed):
+            reject('manifest_changed')
         if (not isinstance(document, dict) or set(document) != {
                 'version', 'binding', 'verified_by', 'approval_reference', 'entries'}
                 or document['version'] != 1 or document['binding'] != binding):
@@ -194,57 +249,60 @@ def repair() -> None:
     arguments = context.get_x_argument(as_dictionary=True)
     if not arguments.get('pe_pause_verified', '').strip():
         reject('consumer_pause_attestation_required')
-    for key, value in [('lock_timeout', '5s'), ('statement_timeout', '60s')]:
-        bind.execute(sa.select(sa.func.set_config(key, value, True)))
-    # Fixed, qualified DDL: PostgreSQL has no ORM equivalent for table locks.
-    bind.execute(sa.schema.DDL(
-        'LOCK TABLE public.processed_event IN ACCESS EXCLUSIVE MODE'))
-    binding, before = snapshot(bind)
-    for row in before:
-        group = row.get('consumer_group')
-        if group is not None and (not group.strip() or '\x00' in group):
-            reject('invalid_existing_group')
-    missing = sum(row.get('consumer_group') is None for row in before)
-    LOG.info('processed_event repair: shape=%s rows=%d unattributed=%d',
-             binding['shape'], len(before), missing)
     path = arguments.get('pe_manifest')
-    if missing and not path:
-        reject('verified_attribution_required')
-    mapping = attribution(path, binding, before) if path else {}
-    if binding['shape'] == 'correct':
-        return
-    if binding['shape'] == 'legacy':
-        op.add_column('processed_event', sa.Column(
-            'consumer_group', sa.String(100), nullable=True), schema='public')
-    table = sa.Table('processed_event', sa.MetaData(), schema='public',
-                     autoload_with=bind)
-    for event_id, group in mapping.items():
-        bind.execute(table.update().where(
-            table.c.event_id == event_id, table.c.consumer_group.is_(None)
-        ).values(consumer_group=group))
-    after = [dict(row) for row in bind.execute(sa.select(table)).mappings()]
-    originals = {row['event_id']: row for row in before}
-    if len(after) != len(before):
-        reject('record_preservation_failed')
-    for row in after:
-        old = originals[row['event_id']]
-        if any(row[name] != old[name] for name in BASE):
-            reject('metadata_preservation_failed')
-        expected = old.get('consumer_group') or mapping.get(row['event_id'])
-        if row['consumer_group'] is None or row['consumer_group'] != expected:
-            reject('attribution_preservation_failed')
-    inspector = sa.inspect(bind)
-    pk = inspector.get_pk_constraint('processed_event', schema='public')
-    op.drop_constraint(pk['name'], 'processed_event', type_='primary',
-                       schema='public')
-    op.alter_column('processed_event', 'consumer_group', nullable=False,
-                    existing_type=sa.String(100), schema='public')
-    op.create_primary_key('processed_event_pkey', 'processed_event',
-                          ['event_id', 'consumer_group'], schema='public')
-    if inspector.get_indexes('processed_event', schema='public'):
-        op.drop_index(TRANSITION_INDEX, table_name='processed_event', schema='public')
-    if shape(bind) != 'correct':
-        reject('final_schema_validation_failed')
+    with ExitStack() as resources:
+        handle = resources.enter_context(open_manifest(path)) if path else None
+        observed = manifest_stat(handle) if handle else None
+        for key, value in [('lock_timeout', '5s'), ('statement_timeout', '60s')]:
+            bind.execute(sa.select(sa.func.set_config(key, value, True)))
+        # Fixed, qualified DDL: PostgreSQL has no ORM equivalent for table locks.
+        bind.execute(sa.schema.DDL(
+            'LOCK TABLE public.processed_event IN ACCESS EXCLUSIVE MODE'))
+        binding, before = snapshot(bind)
+        for row in before:
+            group = row.get('consumer_group')
+            if group is not None and (not group.strip() or '\x00' in group):
+                reject('invalid_existing_group')
+        missing = sum(row.get('consumer_group') is None for row in before)
+        LOG.info('processed_event repair: shape=%s rows=%d unattributed=%d',
+                 binding['shape'], len(before), missing)
+        if missing and not path:
+            reject('verified_attribution_required')
+        mapping = attribution(handle, binding, before, observed) if handle else {}
+        if binding['shape'] == 'correct':
+            return
+        if binding['shape'] == 'legacy':
+            op.add_column('processed_event', sa.Column(
+                'consumer_group', sa.String(100), nullable=True), schema='public')
+        table = sa.Table('processed_event', sa.MetaData(), schema='public',
+                         autoload_with=bind)
+        for event_id, group in mapping.items():
+            bind.execute(table.update().where(
+                table.c.event_id == event_id, table.c.consumer_group.is_(None)
+            ).values(consumer_group=group))
+        after = [dict(row) for row in bind.execute(sa.select(table)).mappings()]
+        originals = {row['event_id']: row for row in before}
+        if len(after) != len(before):
+            reject('record_preservation_failed')
+        for row in after:
+            old = originals[row['event_id']]
+            if any(row[name] != old[name] for name in BASE):
+                reject('metadata_preservation_failed')
+            expected = old.get('consumer_group') or mapping.get(row['event_id'])
+            if row['consumer_group'] is None or row['consumer_group'] != expected:
+                reject('attribution_preservation_failed')
+        inspector = sa.inspect(bind)
+        pk = inspector.get_pk_constraint('processed_event', schema='public')
+        op.drop_constraint(pk['name'], 'processed_event', type_='primary',
+                           schema='public')
+        op.alter_column('processed_event', 'consumer_group', nullable=False,
+                        existing_type=sa.String(100), schema='public')
+        op.create_primary_key('processed_event_pkey', 'processed_event',
+                              ['event_id', 'consumer_group'], schema='public')
+        if inspector.get_indexes('processed_event', schema='public'):
+            op.drop_index(TRANSITION_INDEX, table_name='processed_event', schema='public')
+        if shape(bind) != 'correct':
+            reject('final_schema_validation_failed')
 
 
 def upgrade() -> None:

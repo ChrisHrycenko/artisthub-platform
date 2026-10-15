@@ -72,9 +72,15 @@ change or server restart requires a new export and renewed verification. Do not
 rebind an old approval to a changed snapshot automatically.
 
 The migration requires a regular file owned by its effective user, without group
-or world permissions (0600/0400), and at most 10 MB. Symlinks, duplicate JSON keys,
+or world permissions (0600/0400), and at most 10,000,000 bytes. Symlinks in any
+path component, parent-directory (`..`) traversal, duplicate JSON keys,
 unknown/duplicate IDs, missing records, malformed documents and conflicts fail
-closed. Larger histories require a separately reviewed scalable procedure.
+closed. File checks run before the exclusive lock, using descriptor-relative
+no-symlink directory traversal. The same opened file is pinned through the locked
+validation; it is not reopened by pathname. File metadata is rechecked before and
+after a bounded byte read; changes require a fresh export/verification. Use a
+physical directory path without symlinks. Larger histories require a separately
+reviewed scalable procedure.
 
 ## Maintenance execution
 
@@ -100,12 +106,45 @@ PK exists. There are no intermediate commits or concurrent index builds.
 Diagnostics contain only fixed codes, state classes and counts, not identifiers,
 topics, offsets, digests or attribution contents.
 
-Snapshot validation materializes records in memory; rehearse representative
-volume, memory/disk capacity and lock duration. Statement limits
-do not bound total runtime. Large tables may need a separately approved staged
-repair; do not silently expand timeouts. Existing unattended container migration
-commands intentionally stop without attestation. No release workflow is changed
-or re-enabled; its future migration execution needs separate operational review.
+### Mandatory operator preflight gate
+
+Reject unrehearsed workloads. Do not infer a production row-count limit from unit
+or synthetic capacity tests. Approval requires a full-size restored clone of the
+intended database, preserving row widths, schema/index shape, attribution coverage
+and approved manifest/evidence lengths. Keep the clone and evidence private.
+
+Rehearse the exact reviewed artifact with production-equivalent PostgreSQL role,
+grants, server version, connection path/latency and execution resource limits.
+Record and obtain approval for all of the following before execution:
+
+- Verified memory headroom above observed process peak RSS. Snapshot validation
+  materializes records in memory; the manifest's 10,000,000-byte limit does not
+  bound table size, Python memory or already-correct schema validation cost.
+- Verified database, index-build, WAL, temporary storage and backup disk headroom.
+- Measured exclusive-lock acquisition-to-commit duration, including all per-record
+  updates, snapshot/manifest validation, PK creation and commit; include observed
+  variability and a documented safety margin.
+- An approved maintenance window accommodating that measured duration and margin,
+  consumer pause/resumption checks, cancellation, rollback and recovery time.
+- A rehearsed absolute wall-clock deadline supervised outside the migration.
+  Demonstrate cancellation/connection termination, verify backend/lock release
+  and transaction rollback from a fresh connection, and keep consumers paused
+  until recovery verification completes. Do not assume a client timeout alone
+  immediately releases backend locks. Identify the responsible operator and
+  escalation path. This repair does not implement its own total-runtime deadline.
+
+The 5-second lock timeout bounds waiting to acquire locks, not lock-holding time.
+The 60-second statement timeout applies separately to each SQL statement, not the
+whole transaction or Python/file processing. Backfill issues one UPDATE per
+unattributed marker; connection latency and record count affect total lock time.
+Do not silently expand timeouts or extrapolate a safe row-count threshold.
+
+If full-size rehearsal, production-equivalent role/path, approved headroom,
+measured lock duration, maintenance window or proven deadline recovery is missing,
+STOP and reject execution. Large workloads may require a separately approved
+staged repair. Existing unattended container migration commands intentionally
+stop without attestation. No release workflow is changed or re-enabled; its
+future migration execution needs separate operational review.
 
 ## Post-upgrade verification
 

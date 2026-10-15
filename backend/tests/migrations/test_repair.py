@@ -1,5 +1,6 @@
 """Forward-only repair, preservation and fail-closed regression tests."""
 
+from collections.abc import Iterator
 from datetime import datetime
 import importlib.util
 import json
@@ -90,7 +91,7 @@ def test_invalid_manifest_preserves_all_data(lab, defect) -> None:
         document['entries'].pop()
     elif defect == 'conflicting':
         document['entries'].append(dict(document['entries'][0],
-                                       consumer_group='different'))
+                                        consumer_group='different'))
     elif defect == 'unknown':
         document['entries'][0]['event_id'] = 'unknown-event'
     elif defect == 'stale':
@@ -185,7 +186,7 @@ def test_already_correct_multigroup_history(lab) -> None:
 
 
 @pytest.mark.parametrize('change', ['column', 'unique', 'type', 'key', 'index',
-                                   'nonnull_partial'])
+                                    'nonnull_partial'])
 def test_unknown_shapes_rejected(lab, change) -> None:
     """Unsupported schemas are rejected without advancing the revision."""
     def alter(operations) -> None:
@@ -380,3 +381,149 @@ def test_correct_shape_with_legacy_uniqueness_rejected(lab) -> None:
     with lab.db.engine.connect() as connection:
         with pytest.raises(RuntimeError, match='unsupported_constraints'):
             lab.repair.snapshot(connection)
+
+
+@pytest.fixture
+def lock_attempts(lab) -> Iterator[list[str]]:
+    """Record exclusive-lock attempts without changing migration execution."""
+    attempts = []
+
+    def record(connection, cursor, statement, parameters, context, many) -> None:
+        """Observe only the fixed processed-event exclusive-lock statement."""
+        if statement.startswith('LOCK TABLE public.processed_event'):
+            attempts.append(statement)
+
+    sa.event.listen(lab.db.engine, 'before_cursor_execute', record)
+    try:
+        yield attempts
+    finally:
+        sa.event.remove(lab.db.engine, 'before_cursor_execute', record)
+
+
+@pytest.mark.parametrize('size', [10_000_000, 10_000_001])
+def test_manifest_byte_boundary(lab, lock_attempts, size) -> None:
+    """Accept the exact byte maximum; reject one byte more before locking."""
+    original = seed(lab)
+    path = lab.manifest()
+    content = path.read_bytes()
+    path.write_bytes(content + b' ' * (size - len(content)))
+    assert path.stat().st_size == size
+    before = lab.state()
+    if size == 10_000_001:
+        with pytest.raises(RuntimeError, match='unsafe_manifest_file'):
+            lab.migrate(args=[PAUSE, f'pe_manifest={path}'])
+        assert lock_attempts == []
+        assert lab.state() == before
+    else:
+        lab.migrate(args=[PAUSE, f'pe_manifest={path}'])
+        assert len(lock_attempts) == 1
+        assert lab.state()[2] == HEAD
+        assert [{key: row[key] for key in original[0]}
+                for row in lab.state()[1]] == original
+
+
+@pytest.mark.parametrize('defect', [
+    'group_read', 'world_read', 'world_execute', 'directory', 'fifo',
+    'file_symlink', 'parent_symlink', 'parent_traversal', 'missing', 'owner',
+])
+def test_file_preflight_rejects_before_lock(
+        lab, lock_attempts, tmp_path, monkeypatch, defect) -> None:
+    """Reject unsafe file metadata, types and traversal before any lock."""
+    seed(lab)
+    path = lab.manifest()
+    if defect == 'group_read':
+        path.chmod(0o640)
+    elif defect == 'world_read':
+        path.chmod(0o604)
+    elif defect == 'world_execute':
+        path.chmod(0o601)
+    elif defect == 'directory':
+        path = tmp_path / 'directory'
+        path.mkdir(mode=0o700)
+    elif defect == 'fifo':
+        path = tmp_path / 'fifo'
+        os.mkfifo(path, 0o600)
+    elif defect == 'file_symlink':
+        link = tmp_path / 'file-link'
+        link.symlink_to(path)
+        path = link
+    elif defect == 'parent_symlink':
+        directory = tmp_path / 'private'
+        directory.mkdir(mode=0o700)
+        path = path.replace(directory / path.name)
+        link = tmp_path / 'directory-link'
+        link.symlink_to(directory, target_is_directory=True)
+        path = link / path.name
+    elif defect == 'parent_traversal':
+        directory = tmp_path / 'private'
+        directory.mkdir(mode=0o700)
+        path = directory / '..' / path.name
+    elif defect == 'missing':
+        path = tmp_path / 'missing'
+    before = lab.state()
+    with monkeypatch.context() as patcher:
+        if defect == 'owner':
+            actual_uid = os.geteuid()
+            patcher.setattr(lab.repair.os, 'geteuid', lambda: actual_uid + 1)
+        with pytest.raises(RuntimeError, match='unsafe_manifest_file') as error:
+            lab.migrate(args=[PAUSE, f'pe_manifest={path}'])
+    assert 'private-event' not in str(error.value)
+    assert lock_attempts == []
+    assert lab.state() == before
+
+
+@pytest.mark.parametrize('change', ['content', 'permissions', 'growth'])
+def test_revalidation_rejects_changes_after_preflight(lab, change) -> None:
+    """Changes after the early check still abort the locked transaction."""
+    seed(lab)
+    path = lab.manifest()
+    before = lab.state()
+
+    def change_file(connection, cursor, statement, parameters, context, many) -> None:
+        """Mutate the file only after early validation and lock acquisition."""
+        if statement.startswith('LOCK TABLE public.processed_event'):
+            if change == 'permissions':
+                path.chmod(0o644)
+            elif change == 'growth':
+                with path.open('ab') as handle:
+                    handle.write(b' ' * 10_000_001)
+            else:
+                path.write_text('{"private-content":"changed"}')
+
+    sa.event.listen(lab.db.engine, 'after_cursor_execute', change_file)
+    try:
+        with pytest.raises(RuntimeError, match='manifest_changed|unsafe_manifest_file'):
+            lab.migrate(args=[PAUSE, f'pe_manifest={path}'])
+    finally:
+        sa.event.remove(lab.db.engine, 'after_cursor_execute', change_file)
+    assert lab.state() == before
+
+
+def test_parent_path_swap_cannot_replace_pinned_manifest(lab, tmp_path) -> None:
+    """A renamed parent and substituted pathname cannot redirect the read."""
+    original = seed(lab)
+    original_path = lab.manifest()
+    parent = tmp_path / 'approved'
+    parent.mkdir(mode=0o700)
+    path = original_path.replace(parent / original_path.name)
+    moved = tmp_path / 'moved'
+    replacement = tmp_path / 'replacement'
+    replacement.mkdir(mode=0o700)
+    substitute = replacement / path.name
+    substitute.write_text('{"private-content":"must-not-be-read"}')
+    substitute.chmod(0o600)
+
+    def swap(connection, cursor, statement, parameters, context, many) -> None:
+        """Replace the parent pathname after the manifest descriptor is pinned."""
+        if statement.startswith('LOCK TABLE public.processed_event'):
+            parent.rename(moved)
+            parent.symlink_to(replacement, target_is_directory=True)
+
+    sa.event.listen(lab.db.engine, 'after_cursor_execute', swap)
+    try:
+        lab.migrate(args=[PAUSE, f'pe_manifest={path}'])
+    finally:
+        sa.event.remove(lab.db.engine, 'after_cursor_execute', swap)
+    assert lab.state()[2] == HEAD
+    assert [{key: row[key] for key in original[0]}
+            for row in lab.state()[1]] == original
