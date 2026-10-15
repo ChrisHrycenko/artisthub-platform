@@ -139,7 +139,7 @@ jobs:
 
       - name: Run migrations on test DB
         env:
-          DATABASE_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          DATABASE_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
           FLASK_APP: run:app
           FLASK_ENV: production
@@ -149,7 +149,7 @@ jobs:
 
       - name: Run PostgreSQL integration + concurrency tests
         env:
-          ARTISTHUB_TEST_POSTGRES_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
         run: |
           cd backend
