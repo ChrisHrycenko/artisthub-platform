@@ -39,11 +39,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run actionlint
-        uses: rhysd/actionlint@v1.7.7
+        uses: docker://rhysd/actionlint:1.7.7
         with:
           # Fail on any actionlint error.
-          # Warnings are reported but do not block the pipeline.
-          flags: "-color"
+          args: -color
 
   # ──────────────────────────────────────────────────────────────────────
   # 1. Lint
@@ -175,4 +174,7 @@ jobs:
         run: pip install fastavro==1.12.2
 
       - name: Validate Avro schemas
-        run: python kafka/validate_schemas.py
+        # Offline checks only. Live Schema Registry verification requires a
+        # separately provisioned registry and an explicit integration run.
+        # AI schemas without sample events remain warnings, not validated samples.
+        run: python kafka/validate_schemas.py --local-only
