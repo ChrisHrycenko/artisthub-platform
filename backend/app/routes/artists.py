@@ -40,6 +40,7 @@ from app.models.release import MusicRelease
 from app.schemas.artist import ArtistCreateSchema, ArtistUpdateSchema
 from app.services.event_factory import build_artist_profile_updated
 from app.utils.responses import success, error
+from app.utils.authorization import artist_required
 
 artists_bp = Blueprint("artists", __name__)
 
@@ -117,6 +118,7 @@ def get_artist(artist_id: int):
 
 @artists_bp.post("/artists")
 @login_required
+@artist_required
 def create_artist():
     """
     Create a new artist profile for the currently authenticated artist.
@@ -169,6 +171,7 @@ def create_artist():
 
 @artists_bp.put("/artists/<int:artist_id>")
 @login_required
+@artist_required
 def update_artist(artist_id: int):
     """
     Update an existing artist profile.
