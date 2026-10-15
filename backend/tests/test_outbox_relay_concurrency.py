@@ -647,7 +647,14 @@ def test_at_least_once_consumer_idempotency(pg_app, pg_db):
         assert existing is None, "ProcessedEvent should not exist yet"
 
         # Consumer processes the event and marks it.
-        pe = ProcessedEvent(event_id=event_id, consumer_group=consumer_group)
+        pe = ProcessedEvent(
+            event_id=event_id,
+            consumer_group=consumer_group,
+            event_type="fan.followed.artist",
+            topic="artisthub.social",
+            partition=0,
+            offset=0,
+        )
         db.session.add(pe)
         db.session.commit()
 
