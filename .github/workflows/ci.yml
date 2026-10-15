@@ -39,11 +39,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run actionlint
-        uses: rhysd/actionlint@v1.7.7
+        uses: docker://rhysd/actionlint:1.7.7
         with:
           # Fail on any actionlint error.
-          # Warnings are reported but do not block the pipeline.
-          flags: "-color"
+          args: -color
 
   # ──────────────────────────────────────────────────────────────────────
   # 1. Lint
@@ -139,7 +138,7 @@ jobs:
 
       - name: Run migrations on test DB
         env:
-          DATABASE_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          DATABASE_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
           FLASK_APP: run:app
           FLASK_ENV: production
@@ -149,7 +148,7 @@ jobs:
 
       - name: Run PostgreSQL integration + concurrency tests
         env:
-          ARTISTHUB_TEST_POSTGRES_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
         run: |
           cd backend
@@ -175,4 +174,7 @@ jobs:
         run: pip install fastavro==1.12.2
 
       - name: Validate Avro schemas
-        run: python kafka/validate_schemas.py
+        # Offline checks only. Live Schema Registry verification requires a
+        # separately provisioned registry and an explicit integration run.
+        # AI schemas without sample events remain warnings, not validated samples.
+        run: python kafka/validate_schemas.py --local-only

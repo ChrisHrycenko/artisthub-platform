@@ -130,7 +130,7 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run migrations
         env:
-          DATABASE_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          DATABASE_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
           FLASK_APP: run:app
           FLASK_ENV: production
@@ -139,7 +139,7 @@ jobs:
           flask db upgrade
       - name: Run PostgreSQL + concurrency tests
         env:
-          ARTISTHUB_TEST_POSTGRES_URL: postgresql://artisthub:ci_test_password@localhost:5432/artisthub_test
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
           SECRET_KEY: ci-test-secret-key-not-for-prod
         run: |
           cd backend
@@ -156,7 +156,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install fastavro==1.12.2
-      - run: python kafka/validate_schemas.py
+      # Offline checks; live Schema Registry verification is a separate run.
+      # Missing AI sample events remain visible warnings.
+      - run: python kafka/validate_schemas.py --local-only
 
   # ──────────────────────────────────────────────────────────────────────
   # 2. Build backend image
@@ -188,10 +190,12 @@ jobs:
           else
             IMAGE_BASE="artisthub-backend"
           fi
-          echo "image-base=${IMAGE_BASE}" >> "$GITHUB_OUTPUT"
-          echo "image-ref=${IMAGE_BASE}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "sha-tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          echo "short-sha=${SHORT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "image-base=${IMAGE_BASE}"
+            echo "image-ref=${IMAGE_BASE}:${GITHUB_SHA}"
+            echo "sha-tag=${GITHUB_SHA}"
+            echo "short-sha=${SHORT}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build backend image
         uses: docker/build-push-action@v5
@@ -222,7 +226,7 @@ jobs:
             -p 15000:5000 \
             "${{ steps.meta.outputs.image-ref }}"
           # Allow up to 15s for gunicorn to start.
-          for i in $(seq 1 15); do
+          for ((attempt=0; attempt<15; attempt++)); do
             if curl -sf http://localhost:15000/api/health > /dev/null 2>&1; then
               echo "✓ /api/health responded"
               break
@@ -514,24 +518,53 @@ jobs:
   # ──────────────────────────────────────────────────────────────────────
   # 6. Publish images to registry
   # ──────────────────────────────────────────────────────────────────────
+  registry-config:
+    name: Check registry credential presence
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.registry.outputs.configured }}
+    steps:
+      - name: Check presence without exposing credentials
+        id: registry
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if [ -n "$REGISTRY_HOST" ] && [ -n "$REGISTRY_NAMESPACE" ] &&
+             [ -n "$REGISTRY_USERNAME" ] && [ -n "$REGISTRY_PASSWORD" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
   publish:
     name: Publish images
     runs-on: ubuntu-latest
-    needs: [scan-backend, scan-frontend]
+    needs: [scan-backend, scan-frontend, registry-config]
 
     # Skip publish if registry credentials are not configured.
     # This allows the pipeline to build+scan without a registry.
-    if: |
-      secrets.REGISTRY_HOST != '' &&
-      secrets.REGISTRY_NAMESPACE != '' &&
-      secrets.REGISTRY_USERNAME != '' &&
-      secrets.REGISTRY_PASSWORD != ''
+    if: needs.registry-config.outputs.configured == 'true'
 
     outputs:
       backend-digest: ${{ steps.push-backend.outputs.digest }}
       frontend-digest: ${{ steps.push-frontend.outputs.digest }}
 
     steps:
+      - name: Require registry credentials before publication
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          test -n "$REGISTRY_HOST"
+          test -n "$REGISTRY_NAMESPACE"
+          test -n "$REGISTRY_USERNAME"
+          test -n "$REGISTRY_PASSWORD"
+
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
@@ -591,12 +624,14 @@ jobs:
 
       - name: Log digests
         run: |
-          echo "### Image publication summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | SHA tag | Digest |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| backend | \`${{ github.sha }}\` | \`${{ steps.push-backend.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| frontend | \`${{ github.sha }}\` | \`${{ steps.push-frontend.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Image publication summary"
+            echo ""
+            echo "| Image | SHA tag | Digest |"
+            echo "|---|---|---|"
+            echo "| backend | \`${{ github.sha }}\` | \`${{ steps.push-backend.outputs.digest }}\` |"
+            echo "| frontend | \`${{ github.sha }}\` | \`${{ steps.push-frontend.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ──────────────────────────────────────────────────────────────────────
   # 6b. Cosign keyless image signing — Phase 8H
@@ -619,14 +654,14 @@ jobs:
   sign-images:
     name: Sign images (cosign keyless)
     runs-on: ubuntu-latest
-    needs: [publish]
+    needs: [publish, registry-config]
 
     # Only sign when publish ran (i.e. registry credentials are configured).
-    if: |
-      secrets.REGISTRY_HOST != '' &&
-      secrets.REGISTRY_NAMESPACE != '' &&
-      secrets.REGISTRY_USERNAME != '' &&
-      secrets.REGISTRY_PASSWORD != ''
+    if: >-
+      needs.registry-config.outputs.configured == 'true' &&
+      needs.publish.result == 'success' &&
+      needs.publish.outputs.backend-digest != '' &&
+      needs.publish.outputs.frontend-digest != ''
 
     # Required for OIDC token generation (cosign keyless).
     permissions:
@@ -634,6 +669,18 @@ jobs:
       id-token: write
 
     steps:
+      - name: Require registry credentials before signing
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_NAMESPACE: ${{ secrets.REGISTRY_NAMESPACE }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          test -n "$REGISTRY_HOST"
+          test -n "$REGISTRY_NAMESPACE"
+          test -n "$REGISTRY_USERNAME"
+          test -n "$REGISTRY_PASSWORD"
+
       - uses: actions/checkout@v4
 
       - name: Install cosign
@@ -667,21 +714,23 @@ jobs:
 
       - name: Log signing summary
         run: |
-          echo "### Image Signing Summary (cosign keyless)" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image | Digest |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| backend | \`${{ needs.publish.outputs.backend-digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| frontend | \`${{ needs.publish.outputs.frontend-digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Signatures use GitHub Actions OIDC keyless identity (Sigstore)." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Verification (BLOCKED — no live registry):**" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "cosign verify <image>@<digest> \\" >> "$GITHUB_STEP_SUMMARY"
-          echo "  --certificate-identity-regexp='https://github.com/YOUR_ORG/.*' \\" >> "$GITHUB_STEP_SUMMARY"
-          echo "  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Image Signing Summary (cosign keyless)"
+            echo ""
+            echo "| Image | Digest |"
+            echo "|---|---|"
+            echo "| backend | \`${{ needs.publish.outputs.backend-digest }}\` |"
+            echo "| frontend | \`${{ needs.publish.outputs.frontend-digest }}\` |"
+            echo ""
+            echo "Signatures use GitHub Actions OIDC keyless identity (Sigstore)."
+            echo ""
+            echo "**Verification (BLOCKED — no live registry):**"
+            echo "\`\`\`"
+            echo "cosign verify <image>@<digest> \\"
+            echo "  --certificate-identity-regexp='https://github.com/YOUR_ORG/.*' \\"
+            echo "  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ──────────────────────────────────────────────────────────────────────
   # 7. Run summary (always runs)
@@ -695,13 +744,15 @@ jobs:
     steps:
       - name: Write summary
         run: |
-          echo "## ArtistHub Release — ${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Branch | \`${{ github.ref_name }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Workflow run | ${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Triggered by | ${{ github.event_name }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Deploy to production via: **Actions → Deploy to Production → Run workflow**" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## ArtistHub Release — ${{ github.sha }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Workflow run | ${{ github.run_id }} |"
+            echo "| Triggered by | ${{ github.event_name }} |"
+            echo ""
+            echo "Deploy to production via: **Actions → Deploy to Production → Run workflow**"
+          } >> "$GITHUB_STEP_SUMMARY"
