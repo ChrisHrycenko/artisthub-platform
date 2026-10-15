@@ -14,6 +14,17 @@ SQLALCHEMY_DATABASE_URI in ProductionConfig. No other code changes required.
 import os
 
 
+def normalize_database_uri(uri: str) -> str:
+    """Select installed psycopg2 for implicit PostgreSQL URLs, losslessly.
+
+    Preserve explicit drivers, SQLite URLs, credentials and connection options.
+    SQLAlchemy's implicit PostgreSQL driver can change between releases.
+    """
+    if uri.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + uri[len("postgresql://"):]
+    return uri
+
+
 class BaseConfig:
     """
     Shared settings inherited by all environments.
@@ -49,11 +60,11 @@ class DevelopmentConfig(BaseConfig):
     """
 
     DEBUG: bool = True
-    SQLALCHEMY_DATABASE_URI: str = os.environ.get(
+    SQLALCHEMY_DATABASE_URI: str = normalize_database_uri(os.environ.get(
         "DATABASE_URL",
         # File created at backend/instance/artisthub.db
         "sqlite:///artisthub.db"
-    )
+    ))
     # Allow all origins in development for convenience.
     CORS_ORIGINS: list = ["http://localhost:3000", "http://127.0.0.1:3000",
                           "http://localhost:5500", "http://127.0.0.1:5500"]
@@ -103,9 +114,9 @@ class ProductionConfig(BaseConfig):
     """
 
     DEBUG: bool = False
-    SQLALCHEMY_DATABASE_URI: str = os.environ.get(
+    SQLALCHEMY_DATABASE_URI: str = normalize_database_uri(os.environ.get(
         "DATABASE_URL", "sqlite:///artisthub.db"
-    )
+    ))
 
     # PostgreSQL connection pool settings — ignored by SQLite.
     SQLALCHEMY_POOL_SIZE: int = int(os.environ.get("DB_POOL_SIZE", "5"))
@@ -181,7 +192,7 @@ class PostgresTestingConfig(TestingConfig):
         cd backend && pytest tests/test_postgres_integration.py -v
     """
 
-    SQLALCHEMY_DATABASE_URI: str = (
+    SQLALCHEMY_DATABASE_URI: str = normalize_database_uri(
         os.environ.get("ARTISTHUB_TEST_POSTGRES_URL")
         or os.environ.get("DATABASE_URL")
         or "postgresql://artisthub:password@localhost:5432/artisthub_test"
