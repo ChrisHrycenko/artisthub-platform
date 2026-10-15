@@ -44,6 +44,7 @@ from app.services.event_factory import (
     build_artist_merch_deleted,
 )
 from app.utils.responses import success, error
+from app.utils.authorization import artist_required
 
 merch_bp = Blueprint("merch", __name__)
 
@@ -118,6 +119,7 @@ def get_merch(product_id: int):
 
 @merch_bp.post("/merch")
 @login_required
+@artist_required
 def create_merch():
     """
     Create a new merchandise product listing for the authenticated artist.
@@ -162,6 +164,7 @@ def create_merch():
 
 @merch_bp.put("/merch/<int:product_id>")
 @login_required
+@artist_required
 def update_merch(product_id: int):
     """
     Update a merchandise product owned by the authenticated artist.
@@ -218,6 +221,7 @@ def update_merch(product_id: int):
 
 @merch_bp.delete("/merch/<int:product_id>")
 @login_required
+@artist_required
 def delete_merch(product_id: int):
     """
     Delete a merchandise product owned by the authenticated artist.

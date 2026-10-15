@@ -1441,6 +1441,13 @@ GitHub Actions runs `flake8` and `pytest --cov --cov-fail-under=80` on every pus
 
 ## 13. Security
 
+Artist profile, release, post and merchandise mutations require an authenticated
+Artist account. Fan accounts receive a JSON 403 before the mutation handler runs,
+including when a Fan and Artist share the same numeric ID. Existing ownership
+checks also prevent Artists from changing another Artist's resources. Creation
+uses the authenticated Artist identity; client-supplied `artist_id` fields are
+rejected by the existing schemas. Unauthenticated mutations retain HTTP 401.
+
 | Concern | Implementation |
 |---|---|
 | **Password storage** | bcrypt via `flask-bcrypt`; `password_hash` is never returned in any API response or logged |

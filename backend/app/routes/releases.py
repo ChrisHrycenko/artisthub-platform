@@ -44,6 +44,7 @@ from app.services.event_factory import (
     build_artist_release_deleted,
 )
 from app.utils.responses import success, error
+from app.utils.authorization import artist_required
 
 releases_bp = Blueprint("releases", __name__)
 
@@ -126,6 +127,7 @@ def get_release(release_id: int):
 
 @releases_bp.post("/releases")
 @login_required
+@artist_required
 def create_release():
     """
     Create a new music release for the authenticated artist.
@@ -176,6 +178,7 @@ def create_release():
 
 @releases_bp.put("/releases/<int:release_id>")
 @login_required
+@artist_required
 def update_release(release_id: int):
     """
     Update a release owned by the authenticated artist.
@@ -235,6 +238,7 @@ def update_release(release_id: int):
 
 @releases_bp.delete("/releases/<int:release_id>")
 @login_required
+@artist_required
 def delete_release(release_id: int):
     """
     Delete a release owned by the authenticated artist.

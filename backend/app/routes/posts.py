@@ -41,6 +41,7 @@ from app.services.event_factory import (
     build_artist_post_deleted,
 )
 from app.utils.responses import success, error
+from app.utils.authorization import artist_required
 
 posts_bp = Blueprint("posts", __name__)
 
@@ -114,6 +115,7 @@ def get_post(post_id: int):
 
 @posts_bp.post("/posts")
 @login_required
+@artist_required
 def create_post():
     """
     Publish a new social post as the authenticated artist.
@@ -152,6 +154,7 @@ def create_post():
 
 @posts_bp.delete("/posts/<int:post_id>")
 @login_required
+@artist_required
 def delete_post(post_id: int):
     """
     Delete a post owned by the authenticated artist.
