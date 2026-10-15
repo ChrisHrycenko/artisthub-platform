@@ -90,7 +90,7 @@ services:
       - ../.env
     environment:
       FLASK_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
     depends_on:
       postgres:
         condition: service_healthy
@@ -105,7 +105,7 @@ services:
   backend:
     volumes: []          # Discard the SQLite db-data volume mount.
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -116,7 +116,7 @@ services:
   outbox-relay:
     volumes: []
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -129,7 +129,7 @@ services:
   analytics-consumer:
     volumes: []
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -142,7 +142,7 @@ services:
   notification-consumer:
     volumes: []
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-artisthub}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-artisthub}
     depends_on:
       db-migrate:
         condition: service_completed_successfully

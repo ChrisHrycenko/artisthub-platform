@@ -49,6 +49,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.config import normalize_database_uri
+
 # ---------------------------------------------------------------------------
 # Skip the entire module when no PostgreSQL URL is configured.
 # ---------------------------------------------------------------------------
@@ -56,6 +58,8 @@ POSTGRES_URL = (
     os.environ.get("ARTISTHUB_TEST_POSTGRES_URL")
     or os.environ.get("DATABASE_URL")
 )
+if POSTGRES_URL:
+    POSTGRES_URL = normalize_database_uri(POSTGRES_URL)
 
 # Detect SQLite to give a clearer skip reason.
 _is_sqlite_url = (
