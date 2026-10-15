@@ -12,7 +12,7 @@
 #                  includes relay concurrency tests
 #   schema-check   Avro schema structural validation (no live SR needed)
 #
-# PRs: all four jobs run; no deployment is triggered.
+# PRs: quality gates run; no deployment is triggered.
 # Deployment is handled by release.yml (push to main) and
 # deploy-production.yml (manual/Environment approval).
 
@@ -73,7 +73,9 @@ jobs:
           cd backend
           flake8 app consumers run.py run_relay.py \
                  run_analytics_consumer.py run_notification_consumer.py \
-                 tests/test_outbox_relay_concurrency.py
+                 tests/test_outbox_relay_concurrency.py tests/migrations
+          flake8 --isolated --max-line-length=120 migrations/versions/s2f2_processed_event_groups.py
+          flake8 ../scripts/prepare_processed_event_manifest.py
 
   # ──────────────────────────────────────────────────────────────────────
   # 2. SQLite test suite (fast, no external services)
@@ -144,7 +146,7 @@ jobs:
           FLASK_ENV: production
         run: |
           cd backend
-          flask db upgrade
+          flask db upgrade -x pe_pause_verified=ci-isolated-no-consumers
 
       - name: Run PostgreSQL integration + concurrency tests
         env:
@@ -155,6 +157,38 @@ jobs:
           pytest tests/test_postgres_integration.py \
                  tests/test_outbox_relay_concurrency.py \
                  -v --tb=short
+
+  # Independent Alembic-only schema and actual consumer validation.
+  migration-parity:
+    name: Test — PostgreSQL migration parity
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: artisthub
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: artisthub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+      - name: Validate migration parity and consumer transactions
+        working-directory: backend
+        env:
+          ARTISTHUB_TEST_POSTGRES_URL: postgresql+psycopg2://artisthub:ci_test_password@localhost:5432/artisthub_test
+        run: pytest tests/migrations -v --tb=short
 
   # ──────────────────────────────────────────────────────────────────────
   # 4. Avro schema structural validation
